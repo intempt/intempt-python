@@ -201,3 +201,154 @@ class TestBreakerThreshold:
         buffer.enqueue(event("a"))
         buffer.flush()
         assert attempts["n"] == MAX_CONSECUTIVE_FAILURES
+
+
+class TestQueueBound:
+    """max_queue is a cap: the Nth event fits, the N+1th is dropped.
+
+    The cap is only reachable while a flush is in flight. `_send` runs outside
+    the queue lock, so a producer can add events while a drain is blocked on the
+    network — which is exactly the situation the cap exists for. A single-threaded
+    test cannot reach it, because enqueue drains synchronously as soon as the
+    batch is full.
+    """
+
+    def test_an_event_arriving_at_the_cap_is_dropped_not_queued(self, logger):
+        import threading
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def send(events):
+            entered.set()
+            release.wait(5)
+
+        buffer = Buffer(
+            options=options(size=2, flush_ms=60_000, max_queue=2),
+            max_request_events=50,
+            logger=logger,
+            send=send,
+            sleep=RecordedSleep(),
+        )
+
+        # This thread fills the batch, which triggers a flush that blocks inside
+        # send. The two events stay queued until the send returns.
+        producer = threading.Thread(
+            target=lambda: [buffer.enqueue(event("a")), buffer.enqueue(event("b"))]
+        )
+        producer.start()
+        assert entered.wait(5), "the flush never reached send"
+
+        try:
+            assert len(buffer._queue) == 2, "both events are queued during the send"
+            assert not any("queue full" in line for line in logger.calls["error"]), (
+                "the second event fills the cap and must still have been accepted"
+            )
+
+            buffer.enqueue(event("over-the-cap"))
+
+            assert sum("queue full" in line for line in logger.calls["error"]) == 1
+            assert len(buffer._queue) == 2, "the cap must not be exceeded"
+            names = [item.get("name") for item in buffer._queue]
+            assert "over-the-cap" not in names
+        finally:
+            release.set()
+            producer.join(5)
+
+    def test_the_drop_names_the_event_and_the_cap(self, logger):
+        import threading
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def send(events):
+            entered.set()
+            release.wait(5)
+
+        buffer = Buffer(
+            options=options(size=1, flush_ms=60_000, max_queue=1),
+            max_request_events=50,
+            logger=logger,
+            send=send,
+            sleep=RecordedSleep(),
+        )
+        producer = threading.Thread(target=lambda: buffer.enqueue(event("kept")))
+        producer.start()
+        assert entered.wait(5)
+
+        try:
+            buffer.enqueue(event("dropped"))
+
+            assert any("queue full" in line for line in logger.calls["error"])
+            extras = [
+                extra for extra in logger.context["error"] if extra.get("max_queue") is not None
+            ]
+            assert extras, "the operator needs the cap that was hit"
+            assert extras[-1]["max_queue"] == 1
+            assert extras[-1]["name"] == "dropped"
+        finally:
+            release.set()
+            producer.join(5)
+
+
+class TestWideningRequiresAFullBatch:
+    """Both halves of the widening condition are load-bearing."""
+
+    def test_a_short_batch_does_not_count_toward_widening(self, logger):
+        widths: list[int] = []
+        reject_wide = {"on": True}
+
+        def send(events):
+            widths.append(len(events))
+            if reject_wide["on"] and len(events) > 2:
+                raise IntemptApiError("too large", status=413, body="")
+
+        buffer = Buffer(
+            options=options(size=4, flush_ms=60_000, max_queue=100),
+            max_request_events=50,
+            logger=logger,
+            send=send,
+            sleep=RecordedSleep(),
+        )
+        for i in range(4):
+            buffer.enqueue(event(f"a{i}"))
+        buffer.flush()
+        reject_wide["on"] = False
+        assert buffer._batch_size == 2
+
+        # Twenty flushes of a single event. Each one succeeds, but none fills the
+        # reduced width of 2, so none may count toward the ten-success streak.
+        # With `and` mutated to `or` these would widen the batch back to 4.
+        for i in range(20):
+            buffer.enqueue(event(f"short{i}"))
+            buffer.flush()
+
+        assert buffer._batch_size == 2, (
+            "batches that never tested the width must not earn a widening"
+        )
+
+    def test_the_streak_resets_after_a_widening_rather_than_carrying_over(self, logger):
+        reject_wide = {"on": True}
+
+        def send(events):
+            if reject_wide["on"] and len(events) > 1:
+                raise IntemptApiError("too large", status=413, body="")
+
+        buffer = Buffer(
+            options=options(size=4, flush_ms=60_000, max_queue=100),
+            max_request_events=50,
+            logger=logger,
+            send=send,
+            sleep=RecordedSleep(),
+        )
+        for i in range(4):
+            buffer.enqueue(event(f"a{i}"))
+        buffer.flush()
+        reject_wide["on"] = False
+        assert buffer._batch_size == 1
+
+        for i in range(10):
+            buffer.enqueue(event(f"b{i}"))
+            buffer.flush()
+        assert buffer._batch_size == 2
+        assert buffer._consecutive_successes == 0, "the streak must restart at zero"

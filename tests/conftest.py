@@ -140,9 +140,19 @@ class RecordingLogger:
             "warning": [],
             "error": [],
         }
+        #: The `extra` mapping passed alongside each message, positionally
+        #: matched to `calls`. It used to be swallowed, which meant a test could
+        #: not tell "event dropped" from "event dropped, and here is which one" —
+        #: and the structured half is the half an operator greps.
+        self.context: dict[str, list[dict[str, Any]]] = {
+            "debug": [],
+            "info": [],
+            "warning": [],
+            "error": [],
+        }
 
     def _record(self, level: str):
-        def log(message: Any, *args: Any, **_: Any) -> None:
+        def log(message: Any, *args: Any, **kwargs: Any) -> None:
             text = str(message)
             if args:
                 try:
@@ -150,6 +160,8 @@ class RecordingLogger:
                 except Exception:
                     text = f"{text} {args}"
             self.calls[level].append(text)
+            extra = kwargs.get("extra")
+            self.context[level].append(dict(extra) if isinstance(extra, dict) else {})
 
         return log
 
