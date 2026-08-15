@@ -17,3 +17,7 @@ htmlcov/
 mutants/
 mutation-summary.json
 setup.cfg
+
+# Local staging credentials for scripts/e2e.*  Never commit: these repos are public.
+.env.local
+.env
