@@ -1,5 +1,6 @@
 __pycache__/
 .coverage
+.mutlogs/
 .mutmut-cache
 .mypy_cache/
 .pytest_cache/
