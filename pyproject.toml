@@ -67,5 +67,5 @@ strict = true
 files = ["src/intempt"]
 
 [tool.mutmut]
-paths_to_mutate = "src/intempt/"
-tests_dir = "tests/"
+source_paths = "src/intempt/"
+pytest_add_cli_args_test_selection = ["tests/"]
