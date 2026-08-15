@@ -18,6 +18,25 @@ def event(name: str) -> dict:
     return {"name": name, "payload": [{"eventId": name, "timestamp": 1, "userId": "u1"}]}
 
 
+class RecordedSleep:
+    """Captures requested waits instead of taking them.
+
+    Asserting the requested duration is a stronger check than asserting elapsed
+    wall clock, and it keeps the suite fast enough for mutation testing to be
+    worth running.
+    """
+
+    def __init__(self) -> None:
+        self.waits: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.waits.append(seconds)
+
+    @property
+    def ms(self) -> list[int]:
+        return [round(s * 1000) for s in self.waits]
+
+
 OPTIONS = BatchOptions(size=10, flush_ms=60_000, max_queue=100, flush_on_exit=False)
 
 
@@ -97,19 +116,30 @@ class TestRetryPolicy:
         assert c.buffered == 0
         assert logger.has("error", "single event too large")
 
-    def test_429_honours_retry_after(self, batched, server, logger):
-        server.expect(
-            Reply(status=429, headers={"Retry-After": "1"}),
-            Reply(),
-        )
-        c = batched(batch=BatchOptions(size=1, flush_ms=10, max_queue=10, flush_on_exit=False))
-        started = time.monotonic()
-        c.track("a", user_id="u1")
-        c.flush()
-        elapsed = time.monotonic() - started
+    def test_429_honours_retry_after(self, logger):
+        slept = RecordedSleep()
+        attempts = {"n": 0}
 
+        def send(_events):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise IntemptApiError("slow down", status=429, body="", retry_after_ms=1000)
+
+        buffer = Buffer(
+            options=BatchOptions(size=1, flush_ms=10, max_queue=10, flush_on_exit=False),
+            max_request_events=50,
+            logger=logger,
+            send=send,
+            sleep=slept,
+        )
+        buffer.enqueue(event("a"))
+        buffer.flush()
+
+        # The server asked for 1s and got 1s — asserted from the requested wait
+        # rather than from elapsed wall clock, which is both stronger and free.
+        assert slept.ms == [1000]
         assert logger.has("warning", "retrying in 1000ms")
-        assert elapsed >= 0.9
+        assert buffer.size == 0
 
     def test_a_negative_retry_after_never_becomes_a_negative_wait(self, batched, server, logger):
         server.expect(Reply(status=429, headers={"Retry-After": "-5"}), Reply())
@@ -168,15 +198,19 @@ class TestRetryPolicy:
         assert stop and "event(s) remain buffered" in stop[0]
 
     def test_backoff_doubles_rather_than_shrinking(self, logger):
+        slept = RecordedSleep()
         buffer = Buffer(
             options=BatchOptions(size=1, flush_ms=60, max_queue=10, flush_on_exit=False),
             max_request_events=50,
             logger=logger,
             send=failing(500),
+            sleep=slept,
         )
         buffer.enqueue(event("a"))
         buffer.flush()
 
+        # The decision, not the elapsed time.
+        assert slept.ms[:3] == [120, 240, 480]
         waits = [
             int(line.split("retrying in ")[1].rstrip("ms"))
             for line in logger.calls["warning"]

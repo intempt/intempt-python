@@ -62,12 +62,21 @@ class Buffer:
         logger: Any,
         send: Callable[[list[dict[str, Any]]], None],
         close_budget_s: float = CLOSE_DRAIN_BUDGET_S,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        """
+        ``sleep`` is injectable so tests can assert the backoff *decision*
+        without paying the wall clock for it. Asserting how long a test took is
+        a worse check than asserting what the code chose, and a suite full of
+        real sleeps makes mutation testing intractable — the retry table alone
+        was costing seconds per run.
+        """
         self._options = options
         self._max_request_events = max_request_events
         self._logger = logger
         self._send = send
         self._close_budget_s = close_budget_s
+        self._sleep = sleep
 
         self._queue: list[dict[str, Any]] = []
         self._batch_size = min(options.size, max_request_events)
@@ -218,7 +227,7 @@ class Buffer:
         ):
             return "stop"
         self._logger.warning("[intempt] send failed; retrying in %dms", backoff_ms)
-        time.sleep(backoff_ms / 1000)
+        self._sleep(backoff_ms / 1000)
         return "requeue"
 
     def _handle_too_large(self, batch: Sequence[dict[str, Any]]) -> str:
