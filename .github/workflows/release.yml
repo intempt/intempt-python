@@ -1,0 +1,78 @@
+# Publishes to PyPI, only on a version tag.
+#
+# Mirrors the Node SDK's release workflow, including the guard that cost that
+# package 21 months of silence: a tag that disagrees with the version in the
+# source puts a mislabelled artifact on the index forever, and PyPI will not let
+# you replace it.
+#
+# Uses PyPI Trusted Publishing (OIDC), so there is no API token to rotate or
+# leak. It needs one piece of setup on the PyPI side before the first release:
+#
+#   PyPI -> the `intempt` project -> Publishing -> Add a pending publisher
+#     owner:     intempt
+#     repository: intempt-python
+#     workflow:   release.yml
+#     environment: pypi
+#
+# Until that exists the publish step fails with a 403 and nothing is uploaded.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: write   # create the GitHub Release
+      id-token: write   # trusted publishing
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -e ".[dev]" build
+
+      # The same gates the PR runs. A release is not the place to find out the
+      # suite is red.
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy
+      - run: pytest --cov --cov-report=term-missing --cov-fail-under=90
+
+      - name: Verify the tag matches the packaged version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(python -c 'import re,pathlib; print(re.search(r"__version__\s*=\s*\"([^\"]+)\"", pathlib.Path("src/intempt/__init__.py").read_text()).group(1))')"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match __version__ $PKG"
+            exit 1
+          fi
+          echo "version $PKG"
+
+      - run: python -m build
+
+      # Refuses malformed metadata before anything is uploaded, which is the
+      # only chance to catch it: PyPI accepts a bad long_description and then
+      # renders it as plain text on the project page permanently.
+      - run: pip install twine && twine check dist/*
+
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
