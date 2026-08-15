@@ -81,49 +81,88 @@ class TestBackoffBounds:
 
 
 class TestWideningThreshold:
-    def test_widens_on_the_tenth_success_and_not_the_ninth(self, logger):
-        widths: list[int] = []
+    """The streak counter is read after every send, not inferred from widths.
+
+    An earlier version of this test watched the batch widths and asserted that a
+    widening had happened "by" the tenth success. That left slack: `>=` mutating
+    to `>`, `+= 1` to `+= 2`, and `<` to `<=` all survived it. Reading
+    `_consecutive_successes` after each flush pins the arithmetic instead of the
+    outcome.
+    """
+
+    def drive(self, logger):
+        """Reduce the width to 2 with one 413, then return the buffer."""
         reject_wide = {"on": True}
 
         def send(events):
-            widths.append(len(events))
             if reject_wide["on"] and len(events) > 2:
                 raise IntemptApiError("too large", status=413, body="")
 
         buffer = Buffer(
-            options=options(size=4),
+            options=options(size=4, flush_ms=60_000, max_queue=100),
             max_request_events=50,
             logger=logger,
             send=send,
             sleep=RecordedSleep(),
         )
-        # One 413 takes the width from 4 to 2.
         for i in range(4):
             buffer.enqueue(event(f"a{i}"))
         buffer.flush()
         reject_wide["on"] = False
+        assert buffer._batch_size == 2, "one 413 halves a width of 4"
+        return buffer
 
-        # Phase one drained the remaining two events at width 2, which is two
-        # successes on the streak. Eight more full-width sends reach nine.
-        for round_ in range(7):
+    def test_the_streak_advances_by_exactly_one_per_full_width_success(self, logger):
+        buffer = self.drive(logger)
+        buffer._consecutive_successes = 0
+
+        for expected in range(1, SUCCESSES_BEFORE_WIDENING):
             for k in range(2):
-                buffer.enqueue(event(f"b{round_}-{k}"))
+                buffer.enqueue(event(f"e{expected}-{k}"))
             buffer.flush()
 
-        before = len(widths)
-        for k in range(2):
-            buffer.enqueue(event(f"c{k}"))
-        buffer.flush()
-        assert max(widths[before:]) == 2, "must not widen before the tenth success"
+            assert buffer._consecutive_successes == expected
+            assert buffer._batch_size == 2, (
+                f"widened after {expected} successes, before the threshold"
+            )
 
-        # The tenth success widens, which the next send shows.
-        for k in range(2):
-            buffer.enqueue(event(f"d{k}"))
-        buffer.flush()
-        for k in range(4):
-            buffer.enqueue(event(f"e{k}"))
-        buffer.flush()
-        assert max(widths) == 4, "must widen once the tenth full-width success lands"
+    def test_the_tenth_success_widens_and_resets_the_streak(self, logger):
+        buffer = self.drive(logger)
+        buffer._consecutive_successes = 0
+
+        for i in range(SUCCESSES_BEFORE_WIDENING):
+            for k in range(2):
+                buffer.enqueue(event(f"e{i}-{k}"))
+            buffer.flush()
+
+        assert buffer._batch_size == 4, "the tenth success must widen"
+        assert buffer._consecutive_successes == 0, "and must restart the streak"
+
+    def test_a_width_already_at_full_does_not_accumulate_a_streak(self, logger):
+        """`self._batch_size < full` — at full width there is nothing to earn."""
+        buffer = Buffer(
+            options=options(size=2, flush_ms=60_000, max_queue=100),
+            max_request_events=50,
+            logger=logger,
+            send=lambda events: None,
+            sleep=RecordedSleep(),
+        )
+        assert buffer._batch_size == 2
+
+        # Checked after every send, and the loop deliberately stops at a count
+        # that is not a multiple of the threshold. Reading the streak only after
+        # ten sends would pass either way: with `<=` the counter reaches ten,
+        # widens to min(full, 2*2) = 2 — no visible change — and resets itself to
+        # zero, so the assertion would hold for the wrong reason.
+        for i in range(SUCCESSES_BEFORE_WIDENING - 5):
+            for k in range(2):
+                buffer.enqueue(event(f"e{i}-{k}"))
+            buffer.flush()
+
+            assert buffer._consecutive_successes == 0, (
+                "a batch at full width cannot earn a widening, so nothing counts"
+            )
+        assert buffer._batch_size == 2
 
 
 class TestDropWarningThreshold:
