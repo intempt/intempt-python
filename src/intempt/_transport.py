@@ -20,7 +20,7 @@ import json
 import socket
 import threading
 import time
-from typing import Any
+from typing import Any, NoReturn
 
 from ._config import ResolvedConfig
 from ._errors import IntemptApiError, IntemptConfigError
@@ -59,7 +59,7 @@ class ApiKeyCredentials:
 
     __str__ = __repr__
 
-    def __reduce__(self):  # pragma: no cover - pickling a credential is a mistake
+    def __reduce__(self) -> NoReturn:  # pragma: no cover - pickling a credential is a mistake
         raise TypeError("ApiKeyCredentials is not serialisable")
 
 

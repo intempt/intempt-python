@@ -12,3 +12,6 @@ mutants/
 mutation-summary.json
 .mypy_cache/
 .ruff_cache/
+.venv312/
+*.py.bak
+setup.cfg

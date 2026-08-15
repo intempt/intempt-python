@@ -175,8 +175,7 @@ class Intempt:
         for index, item in enumerate(events):
             if not isinstance(item, Mapping):
                 raise IntemptConfigError(f"track_batch[{index}]: each event must be a mapping")
-            name = item.get("event")
-            self._assert_event_name(name, f"track_batch[{index}]")
+            name = self._assert_event_name(item.get("event"), f"track_batch[{index}]")
             require_identifier(item, f"track_batch[{index}]")
             rest = {k: v for k, v in item.items() if k != "event"}
             wire.append(self._build_event(name, rest))
@@ -348,13 +347,20 @@ class Intempt:
                 "Intempt client is closed. Calls after close() are not sent; create a new client."
             )
 
-    def _assert_event_name(self, event: Any, method: str) -> None:
+    def _assert_event_name(self, event: Any, method: str) -> str:
+        """Validate and return the name.
+
+        Returns rather than asserting so the caller gets a narrowed `str`. A
+        validator that only raises leaves `Any | None` flowing into a `str`
+        parameter, which type checking catches and readers do not.
+        """
         if not isinstance(event, str) or not event.strip():
             raise IntemptConfigError(f"{method}: event name is required")
         if event.strip().lower() in _RESERVED:
             raise IntemptConfigError(
                 f'{method}: "{event}" is reserved; use identify(), group() or alias()'
             )
+        return event
 
     @staticmethod
     def _reserved_name(event: Any, method: str) -> str:
