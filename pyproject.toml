@@ -43,6 +43,9 @@ packages = ["src/intempt"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+markers = [
+  "sample: runs a sample app in a subprocess; excluded from the mutation run only",
+]
 
 [tool.coverage.run]
 source = ["src/intempt"]
@@ -69,3 +72,9 @@ files = ["src/intempt"]
 [tool.mutmut]
 source_paths = ["src/intempt/"]
 pytest_add_cli_args_test_selection = ["tests/"]
+# The sample-app tests each spawn a Python subprocess, which takes the suite
+# from 4s to 29s. mutmut reruns the suite once per mutant, so leaving them in
+# turns a 25-minute job into a 3-hour one for very little extra signal: they
+# exercise the same code paths the unit tests already cover, one process
+# removed. They still run in the `test` job, under the coverage gate.
+pytest_add_cli_args = ["-m", "not sample"]

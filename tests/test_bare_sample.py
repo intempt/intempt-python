@@ -18,6 +18,9 @@ import pytest
 from tests.conftest import API_KEY, ORG, PROJECT, SOURCE, Reply
 from tests.test_example_app import SRC, _find
 
+#: Spawns a subprocess per test. Excluded from the mutation run; see pyproject.
+pytestmark = pytest.mark.sample
+
 BARE = _find("examples/bare/send.py")
 
 USER = "bare-test@example.com"

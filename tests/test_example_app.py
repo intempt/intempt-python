@@ -25,6 +25,9 @@ import pytest
 import intempt
 from tests.conftest import API_KEY, ORG, PROJECT, SOURCE
 
+#: Spawns a subprocess per test. Excluded from the mutation run; see pyproject.
+pytestmark = pytest.mark.sample
+
 
 def _find(relative: str) -> Path:
     """Walk up from this file until `relative` turns up.
