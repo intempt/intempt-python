@@ -67,5 +67,5 @@ strict = true
 files = ["src/intempt"]
 
 [tool.mutmut]
-source_paths = "src/intempt/"
+source_paths = ["src/intempt/"]
 pytest_add_cli_args_test_selection = ["tests/"]

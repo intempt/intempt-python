@@ -22,9 +22,31 @@ from pathlib import Path
 
 import pytest
 
+import intempt
 from tests.conftest import API_KEY, ORG, PROJECT, SOURCE
 
-APP = Path(__file__).resolve().parent.parent / "examples" / "basic" / "app.py"
+
+def _find(relative: str) -> Path:
+    """Walk up from this file until `relative` turns up.
+
+    mutmut runs the suite from a `mutants/` copy that holds only the package and
+    the tests, so anything resolved as "two directories up" lands in a tree where
+    `examples/` does not exist. Searching upward finds the real one from either
+    layout.
+    """
+    for directory in Path(__file__).resolve().parents:
+        candidate = directory / relative
+        if candidate.exists():
+            return candidate
+    raise RuntimeError(f"could not locate {relative} from {__file__}")
+
+
+APP = _find("examples/basic/app.py")
+
+# The `src` the test process actually imported, which under mutmut is the mutated
+# copy. Deriving it from the module rather than from a path keeps the subprocess
+# exercising the same code as the rest of the suite.
+SRC = Path(intempt.__file__).resolve().parent.parent
 
 
 def free_port() -> int:
@@ -73,7 +95,7 @@ def app(server):
         "INTEMPT_HOST": server.host,
         "INTEMPT_SCHEME": "http",
         "SAMPLE_PORT": str(port),
-        "PYTHONPATH": str(APP.parent.parent.parent / "src"),
+        "PYTHONPATH": str(SRC),
     }
 
     process = subprocess.Popen(
