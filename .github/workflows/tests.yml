@@ -1,0 +1,70 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the floor declared in pyproject; 3.13 is the current release.
+        python: ['3.9', '3.11', '3.13']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy
+      - run: pytest --cov --cov-report=term-missing --cov-fail-under=90
+
+  mutation:
+    # Pinned to one version on purpose. The mutants do not vary by runtime, so
+    # running this across the matrix triples a multi-minute job for no signal.
+    #
+    # 3.12 specifically: mutmut needs libcst, and libcst has no prebuilt wheel
+    # for 3.14 yet, so it tries to compile Rust and fails.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ".[dev,mutation]"
+      - name: Mutation score
+        # 70, not the 85 the Node SDK uses, because the two numbers are not
+        # comparable. Stryker and Infection leave string literals alone by
+        # default; mutmut rewrites every one of them twice — "track" becomes
+        # "XXtrackXX" and "TRACK" — so it generates 1524 mutants for 1404 lines
+        # of source. 240 of the survivors are log-message text and internal
+        # labels nothing reads.
+        #
+        # Measured on the same commit, same suite:
+        #
+        #     Node    Stryker    85.84%
+        #     PHP     Infection  95%      (covered-code MSI 99%)
+        #     Python  mutmut     72.48%
+        #
+        # Raising this past ~75 means asserting the exact wording of every log
+        # line, which buys a number and costs a suite that fails on a reworded
+        # message. The rejection messages are already asserted in full, in
+        # tests/test_messages.py, because those are a contract callers see.
+        #
+        # 70 sits ~2.5 points under the measured score: low enough to be green,
+        # tight enough that a real regression trips it.
+        run: python scripts/mutation_gate.py --threshold 70
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: mutation-report
+          path: mutants/
+          retention-days: 14

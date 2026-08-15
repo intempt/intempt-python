@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "intempt"
+dynamic = ["version"]
+description = "Intempt Python SDK — server-side. Data in, decisions out."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Intempt Technologies" }]
+keywords = ["intempt", "analytics", "cdp", "events", "personalization"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Libraries",
+]
+# No runtime dependencies on purpose: http.client is in the standard library,
+# and a zero-dependency SDK cannot drag a version conflict into a caller's app.
+dependencies = []
+
+[project.urls]
+Homepage = "https://intempt.com"
+Source = "https://github.com/intempt/intempt-python"
+Changelog = "https://github.com/intempt/intempt-python/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11"]
+# Separate extra: mutmut needs libcst, which has no wheel for 3.14 yet and
+# then tries to build Rust. CI runs the mutation job on 3.12.
+mutation = ["mutmut>=3"]
+
+[tool.hatch.version]
+path = "src/intempt/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/intempt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+  "sample: runs a sample app in a subprocess; excluded from the mutation run only",
+]
+
+[tool.coverage.run]
+source = ["src/intempt"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+# 3.10 is the floor mypy itself accepts; the package still supports 3.9 at
+# runtime and CI tests it there.
+python_version = "3.10"
+strict = true
+files = ["src/intempt"]
+
+[tool.mutmut]
+source_paths = ["src/intempt/"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# The sample-app tests each spawn a Python subprocess, which takes the suite
+# from 4s to 29s. mutmut reruns the suite once per mutant, so leaving them in
+# turns a 25-minute job into a 3-hour one for very little extra signal: they
+# exercise the same code paths the unit tests already cover, one process
+# removed. They still run in the `test` job, under the coverage gate.
+pytest_add_cli_args = ["-m", "not sample"]

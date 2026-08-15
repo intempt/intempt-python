@@ -1,0 +1,76 @@
+# Contract test against a real Intempt environment.
+#
+# Everything else in CI is offline: the unit suite runs against a loopback
+# recording server. That proves the SDK sends what it intends to; it cannot prove
+# the API accepts it. This job is the only thing that does.
+#
+# It is not on the PR path, because it writes real events into a real project and
+# needs a credential. Run it manually, or let the nightly schedule catch drift in
+# the ingestion contract.
+#
+# Required repository secrets:
+#   INTEMPT_E2E_API_KEY    a PUBLIC key for a throwaway staging project
+#   INTEMPT_E2E_ORG
+#   INTEMPT_E2E_PROJECT
+#   INTEMPT_E2E_SOURCE_ID
+# Optional but strongly recommended:
+#   INTEMPT_E2E_USER_ID    a stable pre-existing test profile, so runs do not
+#                          create a new throwaway profile every night
+#   INTEMPT_E2E_ACCOUNT_ID a stable test account
+#   INTEMPT_E2E_HOST       defaults to api.staging.intempt.com if unset
+#   INTEMPT_E2E_FEED_ID    a real feed id; recommend skips without it
+#   INTEMPT_E2E_PRODUCT_ID an id that exists in the catalog
+#
+# The same secret names as the Node SDK on purpose: one set of staging
+# credentials serves all three server SDKs, and the three contract tests run the
+# same steps so a divergence shows up as a different table.
+name: E2E (staging)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -e .
+
+      # Skip rather than fail when the secret is absent, so a fork or a repo
+      # without staging credentials does not show a permanently red schedule.
+      - name: Check for credentials
+        id: creds
+        env:
+          KEY: ${{ secrets.INTEMPT_E2E_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::warning::INTEMPT_E2E_API_KEY is not set; skipping the E2E contract test."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run contract test
+        if: steps.creds.outputs.present == 'true'
+        env:
+          INTEMPT_E2E_HOST: ${{ secrets.INTEMPT_E2E_HOST || 'api.staging.intempt.com' }}
+          INTEMPT_E2E_ORG: ${{ secrets.INTEMPT_E2E_ORG }}
+          INTEMPT_E2E_PROJECT: ${{ secrets.INTEMPT_E2E_PROJECT }}
+          INTEMPT_E2E_API_KEY: ${{ secrets.INTEMPT_E2E_API_KEY }}
+          INTEMPT_E2E_SOURCE_ID: ${{ secrets.INTEMPT_E2E_SOURCE_ID }}
+          INTEMPT_E2E_USER_ID: ${{ secrets.INTEMPT_E2E_USER_ID }}
+          INTEMPT_E2E_ACCOUNT_ID: ${{ secrets.INTEMPT_E2E_ACCOUNT_ID }}
+          INTEMPT_E2E_FEED_ID: ${{ secrets.INTEMPT_E2E_FEED_ID }}
+          INTEMPT_E2E_FEED_FIELDS: ${{ secrets.INTEMPT_E2E_FEED_FIELDS }}
+          INTEMPT_E2E_PRODUCT_ID: ${{ secrets.INTEMPT_E2E_PRODUCT_ID }}
+        run: python scripts/e2e.py
