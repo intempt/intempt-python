@@ -259,6 +259,13 @@ if FEED_ID:
         try:
             client.recommend(user_id=user_id, feed_id="000000000", fields=FEED_FIELDS, limit=1)
         except IntemptApiError as error:
+            # 401/403 means the credential was refused, which says nothing about
+            # the feed. Accepting it made this step pass during a run where every
+            # single call 401'd — a green tick for a test that proved nothing.
+            if error.status in (401, 403):
+                raise AssertionError(
+                    f"got {error.status} (auth), so the feed was never evaluated"
+                ) from error
             return f"rejected with {error.status}, as it should be"
         raise AssertionError("an unknown feed id returned success")
 
@@ -269,7 +276,33 @@ else:
 # --- buffered mode ----------------------------------------------------------
 
 
+class DeliveryWatcher:
+    """Captures what the buffer logged, so a dropped batch cannot read as success.
+
+    The retry table drops a non-retryable 4xx batch and logs it rather than
+    raising — right for a background buffer, wrong for a contract test.
+    `flush()` returned cleanly during a run where every request 401'd, and this
+    step reported PASS having delivered nothing.
+    """
+
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+
+    def error(self, message: object, *args: object, **kwargs: object) -> None:
+        self.errors.append(str(message))
+
+    def warning(self, message: object, *args: object, **kwargs: object) -> None:
+        self.errors.append(str(message))
+
+    def info(self, *args: object, **kwargs: object) -> None:
+        return None
+
+    def debug(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
 def buffered() -> str:
+    watcher = DeliveryWatcher()
     buffered_client = Intempt(
         org=ORG,
         project=PROJECT,
@@ -278,11 +311,14 @@ def buffered() -> str:
         host=HOST,
         scheme=SCHEME,
         batch=BatchOptions(size=50, flush_ms=60_000, max_queue=1_000),
+        logger=watcher,
     )
     try:
         for index in range(5):
             buffered_client.track("sdk_e2e_buffered", user_id=user_id, properties={"i": index})
         buffered_client.flush()
+        if watcher.errors:
+            raise AssertionError(f"flush dropped the batch: {watcher.errors[0][:120]}")
         return "5 events, 1 request"
     finally:
         buffered_client.close()
