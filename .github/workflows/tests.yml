@@ -28,7 +28,13 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
+      # mypy refuses to run on PyPy ("Running mypy on PyPy is not supported yet").
+      # Skipping the step rather than the runtime: type checking on one
+      # interpreter is enough, and the point of the PyPy job is to exercise the
+      # SDK there, which it could not do while this step failed the whole matrix
+      # entry before the suite ran.
       - run: mypy
+        if: "!startsWith(matrix.python, 'pypy')"
       - run: pytest --cov --cov-report=term-missing --cov-fail-under=90
 
   mutation:
