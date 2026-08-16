@@ -14,8 +14,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.9 is the floor declared in pyproject; 3.13 is the current release.
-        python: ['3.9', '3.11', '3.13']
+        # Every runtime `requires-python = ">=3.9"` promises, not a sample of
+        # them. Testing 3 of 6 CPython versions meant 3.10, 3.12 and 3.14 were
+        # supported on paper and never executed. PyPy is here because the SDK
+        # has no dependencies and no C extensions, so it should work — and if it
+        # does not, that is worth knowing rather than assuming.
+        python: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14', 'pypy3.11']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5
