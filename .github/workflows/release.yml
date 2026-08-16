@@ -5,16 +5,17 @@
 # source puts a mislabelled artifact on the index forever, and PyPI will not let
 # you replace it.
 #
-# Uses PyPI Trusted Publishing (OIDC), so there is no API token to rotate or
-# leak. It needs one piece of setup on the PyPI side before the first release:
+# Authenticates with an API token in `PYPI_API_TOKEN`, not Trusted Publishing.
+# Trusted Publishing (OIDC) is the better default — nothing to leak, nothing to
+# rotate — and the switch is a small one if it is ever preferred: drop the `with:`
+# block below, add `id-token: write`, and register a pending publisher on PyPI for
+# owner `intempt`, repo `intempt-python`, workflow `release.yml`, environment
+# `pypi`.
 #
-#   PyPI -> the `intempt` project -> Publishing -> Add a pending publisher
-#     owner:     intempt
-#     repository: intempt-python
-#     workflow:   release.yml
-#     environment: pypi
-#
-# Until that exists the publish step fails with a 403 and nothing is uploaded.
+# The token starts account-scoped, because a project-scoped token cannot be
+# created for a project that does not exist yet. Narrow it to the `intempt`
+# project after the first successful upload — an account-scoped token can publish
+# to every project the owner has, which is more authority than this job needs.
 name: Release
 
 on:
@@ -31,7 +32,6 @@ jobs:
     environment: pypi
     permissions:
       contents: write   # create the GitHub Release
-      id-token: write   # trusted publishing
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -68,6 +68,8 @@ jobs:
       - run: pip install twine && twine check dist/*
 
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
 
       - name: Create GitHub Release
         env:
