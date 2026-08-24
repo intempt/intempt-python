@@ -15,6 +15,7 @@ from typing import Any
 from ._buffer import Buffer
 from ._config import ResolvedConfig, merge_config, resolve_config
 from ._errors import IntemptConfigError
+from ._flags import UNANSWERED, FlagContext, FlagDetail
 from ._transport import Transport
 from ._util import chunk, compact, ensure_timestamp, non_blank, require_identifier
 
@@ -285,6 +286,118 @@ class Intempt:
             }
         )
         return self._transport.post(self._config.project_path(f"/feeds/{feed_id}/data"), body)
+
+    # -- flags ------------------------------------------------------------
+
+    def variation(self, key: str, context: FlagContext, default_value: Any) -> Any:
+        """The value assigned to this person for ``key``, or ``default_value``.
+
+        Ask for a key, never a mode. Whether the key names an experiment, a personalization or a
+        flag is the platform's business.
+        """
+        return self.variation_detail(key, context, default_value).value
+
+    def variation_detail(self, key: str, context: FlagContext, default_value: Any) -> FlagDetail:
+        """As :meth:`variation`, plus WHY.
+
+        The reason is what lets a caller tell a deliberate off state from a request the service
+        never answered — the two used to be the same absent entry.
+        """
+        self._assert_open()
+        non_blank(key, "variation", "key")
+
+        choices = self._choose_or_empty(context, [key])
+        for choice in choices:
+            if choice.get("name") == key:
+                body = choice.get("body")
+                return FlagDetail(
+                    value=default_value if body is None else body,
+                    reason=choice.get("reason") or UNANSWERED,
+                    variant=choice.get("group"),
+                )
+        return FlagDetail(value=default_value, reason=UNANSWERED)
+
+    def all_flags(self, context: FlagContext) -> dict[str, Any]:
+        """Every key assigned to this person, in one call."""
+        self._assert_open()
+        out: dict[str, Any] = {}
+        for choice in self._choose_or_empty(context, None):
+            name = choice.get("name")
+            if name:
+                out[name] = choice.get("body")
+        return out
+
+    def bool_variation(self, key: str, context: FlagContext, default_value: bool) -> bool:
+        value = self.variation(key, context, default_value)
+        # A served value of the wrong type is a misconfiguration, not something to coerce:
+        # bool("false") is True, and a silent coercion is indistinguishable from a real answer.
+        return value if isinstance(value, bool) else default_value
+
+    def string_variation(self, key: str, context: FlagContext, default_value: str) -> str:
+        value = self.variation(key, context, default_value)
+        return value if isinstance(value, str) else default_value
+
+    def number_variation(
+        self, key: str, context: FlagContext, default_value: float
+    ) -> float:
+        value = self.variation(key, context, default_value)
+        # bool is a subclass of int in Python, so True would otherwise pass as the number 1.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return default_value
+        return value
+
+    def json_variation(
+        self, key: str, context: FlagContext, default_value: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        value = self.variation(key, context, default_value)
+        return value if isinstance(value, Mapping) else default_value
+
+    def wait_for_initialization(self, timeout_ms: int | None = None) -> None:
+        """Returns immediately.
+
+        Present so the cross-SDK surface is the same everywhere, and so a caller porting from an
+        SDK that polls a local flag store does not have to remove the call. Evaluation here is
+        remote: each ``variation()`` is a request, so there is no local state to wait for.
+        """
+        self._assert_open()
+
+    def _choose_or_empty(
+        self, context: FlagContext, names: list[str] | None
+    ) -> list[Mapping[str, Any]]:
+        """A transport failure returns no choices rather than raising.
+
+        This is the entire reason ``default_value`` is required: a network failure, a 5xx or a
+        timeout must resolve to the value the caller chose. A flag SDK that raises when the
+        service is unreachable takes the application down with it, which is the opposite of what a
+        kill switch is for. A validation mistake still raises, because that is a programming error
+        the caller can fix rather than a runtime condition to absorb.
+        """
+        body = compact(
+            {
+                "identification": compact(
+                    {
+                        "userId": context.user_id if context else None,
+                        "profileId": context.profile_id if context else None,
+                        "sourceId": str(self._config.source_id)
+                        if self._config.source_id
+                        else None,
+                    }
+                ),
+                "names": names,
+                "device": "all",
+            }
+        )
+        try:
+            response = self._transport.post(
+                self._config.project_path("/optimization/choose-api"), body
+            )
+        except Exception:  # noqa: BLE001 - any transport failure must yield the caller's default
+            self._config.logger.warning("[intempt] flag evaluation failed, using defaults")
+            return []
+        if not isinstance(response, Mapping):
+            return []
+        choices = response.get("choices")
+        return list(choices) if isinstance(choices, list) else []
 
     # -- privacy ----------------------------------------------------------
 

@@ -12,6 +12,7 @@ from ._buffer import Buffer
 from ._client import COMMERCE_EVENTS, IDENTIFY_EVENT, Consent, Ecommerce, Intempt
 from ._config import BatchOptions, ResolvedConfig
 from ._errors import IntemptApiError, IntemptConfigError, IntemptError
+from ._flags import FlagContext, FlagDetail, FlagReason
 from ._transport import ApiKeyCredentials, Transport
 
 __version__ = "1.0.0"
@@ -30,5 +31,8 @@ __all__ = [
     "Ecommerce",
     "COMMERCE_EVENTS",
     "IDENTIFY_EVENT",
+    "FlagContext",
+    "FlagDetail",
+    "FlagReason",
     "__version__",
 ]
