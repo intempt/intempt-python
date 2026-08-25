@@ -342,7 +342,10 @@ class Intempt:
         # bool is a subclass of int in Python, so True would otherwise pass as the number 1.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return default_value
-        return value
+        # Explicit: variation() is typed Any, so mypy cannot narrow through the
+        # negated isinstance above and reports a bare `return value` as
+        # no-any-return against the declared float.
+        return float(value)
 
     def json_variation(
         self, key: str, context: FlagContext, default_value: Mapping[str, Any]
