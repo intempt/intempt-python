@@ -24,7 +24,7 @@ from __future__ import annotations
 import os
 import sys
 
-from intempt import Intempt, IntemptApiError, IntemptConfigError
+from intempt import FlagContext, Intempt, IntemptApiError, IntemptConfigError
 
 
 def main() -> int:
@@ -92,6 +92,30 @@ def main() -> int:
             # A consent record is explicit and separate from opt_out(), which
             # only gates this client.
             client.consent.grant(user_id=user_id, category="marketing")
+
+            # --- flags -------------------------------------------------
+            # Ask for a KEY. Whether it names an experiment, a personalization
+            # or a flag is the platform's business, and this call does not
+            # change when that does.
+            context = FlagContext(user_id=user_id, profile_id="device-abc")
+
+            # The default is not optional and it is a real decision: it is what
+            # you get when Intempt cannot be reached. Choose the behaviour you
+            # already have.
+            cta = client.string_variation("pricing_cta", context, "Get started")
+            print(f"variation  -> pricing_cta = {cta!r}")
+
+            # The reason separates a deliberate holdout from an outage. Without
+            # it both are the same absent value, and you cannot tell a rollout
+            # decision from a failure.
+            detail = client.variation_detail("new_checkout", context, False)
+            print(
+                f"detail     -> new_checkout = {detail.value!r} "
+                f"(reason={detail.reason}, variant={detail.variant})"
+            )
+
+            flags = client.all_flags(context)
+            print(f"all_flags  -> {len(flags)} key(s): {', '.join(flags) or '(none)'}")
 
             feed_id = os.environ.get("INTEMPT_FEED_ID")
             if feed_id:
