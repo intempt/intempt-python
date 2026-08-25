@@ -337,9 +337,7 @@ class Intempt:
         value = self.variation(key, context, default_value)
         return value if isinstance(value, str) else default_value
 
-    def number_variation(
-        self, key: str, context: FlagContext, default_value: float
-    ) -> float:
+    def number_variation(self, key: str, context: FlagContext, default_value: float) -> float:
         value = self.variation(key, context, default_value)
         # bool is a subclass of int in Python, so True would otherwise pass as the number 1.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -378,9 +376,7 @@ class Intempt:
                     {
                         "userId": context.user_id if context else None,
                         "profileId": context.profile_id if context else None,
-                        "sourceId": str(self._config.source_id)
-                        if self._config.source_id
-                        else None,
+                        "sourceId": str(self._config.source_id) if self._config.source_id else None,
                     }
                 ),
                 "names": names,
