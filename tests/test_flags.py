@@ -21,28 +21,25 @@ def _choices(*items: dict) -> Reply:
 
 
 class TestVariation:
-    def test_returns_the_served_value_and_its_reason(self, client, server):
+    def test_returns_the_served_value(self, client, server):
+        # `variation`, not `variation_detail` -- the detail method is internal until the platform
+        # sends a reason. Note this fixture supplies "group" and "reason" and the serving response
+        # carries NEITHER today, which is exactly why asserting on them proved nothing.
         server.expect(
             _choices({"name": "checkout_v2", "group": "B", "body": True, "reason": "targeted"})
         )
         c = client()
 
-        detail = c.variation_detail("checkout_v2", CTX, False)
+        assert c.variation("checkout_v2", CTX, False) is True
 
-        assert detail.value is True
-        assert detail.variant == "B"
-        assert detail.reason == "targeted"
-
-    def test_reports_a_holdout_rather_than_an_absent_answer(self, client, server):
-        # The whole reason a reason exists: before it, a held-back person and a failed request were
-        # both an absent entry, so a caller could not tell them apart.
-        server.expect(_choices({"name": "checkout_v2", "body": None, "reason": "holdout"}))
+    def test_returns_the_default_when_the_served_body_is_null(self, client, server):
+        # NOT the holdout case, which cannot be asserted: a held-back person's experience is
+        # absent from the response entirely rather than present with a cause. Telling a holdout
+        # from an outage needs a reason the platform does not send.
+        server.expect(_choices({"name": "checkout_v2", "body": None}))
         c = client()
 
-        detail = c.variation_detail("checkout_v2", CTX, "fallback")
-
-        assert detail.reason == "holdout"
-        assert detail.value == "fallback"
+        assert c.variation("checkout_v2", CTX, "fallback") == "fallback"
 
     def test_returns_the_default_when_the_service_is_unreachable(self, client, server):
         server.expect(Reply(status=500))
@@ -54,10 +51,7 @@ class TestVariation:
         server.expect(_choices())
         c = client()
 
-        detail = c.variation_detail("never_created", CTX, "safe")
-
-        assert detail.value == "safe"
-        assert detail.reason == "off"
+        assert c.variation("never_created", CTX, "safe") == "safe"
 
     def test_refuses_an_empty_key(self, client, server):
         c = client()

@@ -10,7 +10,8 @@ Intempt SDK conforms to. Four of its rules shape this module:
 2. ``default_value`` is REQUIRED. It is what a caller receives on a network failure, a timeout,
    an unknown key or a malformed response. Optional is how ``None`` reaches production during an
    outage.
-3. ``variation_detail`` carries a ``reason``. Without it a caller cannot tell a deliberate off
+3. ``variation_detail`` is NOT exposed. It would carry a ``reason``, and the platform does not
+   send one, so it could not tell a deliberate off
    state from a request the service never answered.
 4. Evaluation is REMOTE only. There is no local rule engine and no flag store to poll.
 
@@ -47,5 +48,3 @@ class FlagDetail:
 
     value: Any
     reason: FlagReason
-    #: The variant the platform selected, absent when nothing was served.
-    variant: str | None = None

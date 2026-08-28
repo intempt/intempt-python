@@ -295,13 +295,19 @@ class Intempt:
         Ask for a key, never a mode. Whether the key names an experiment, a personalization or a
         flag is the platform's business.
         """
-        return self.variation_detail(key, context, default_value).value
+        return self._variation_detail(key, context, default_value).value
 
-    def variation_detail(self, key: str, context: FlagContext, default_value: Any) -> FlagDetail:
-        """As :meth:`variation`, plus WHY.
+    def _variation_detail(self, key: str, context: FlagContext, default_value: Any) -> FlagDetail:
+        """Internal. NOT public, deliberately.
 
-        The reason is what lets a caller tell a deliberate off state from a request the service
-        never answered — the two used to be the same absent entry.
+        It returns a ``reason``, and the platform does not send one: a held-back person's
+        experience is absent from the evaluation response entirely rather than present with a
+        cause. So every reason would read ``off`` — including for someone who WAS targeted and
+        did receive the variant. That is a wrong answer, not a missing one, and a method whose
+        only job is explaining why must not guess.
+
+        :meth:`variation` uses it for the value, which is correct either way. It becomes public
+        when the serving contract carries a reason.
         """
         self._assert_open()
         non_blank(key, "variation", "key")
@@ -313,7 +319,6 @@ class Intempt:
                 return FlagDetail(
                     value=default_value if body is None else body,
                     reason=choice.get("reason") or UNANSWERED,
-                    variant=choice.get("group"),
                 )
         return FlagDetail(value=default_value, reason=UNANSWERED)
 
