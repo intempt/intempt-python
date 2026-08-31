@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0 — unreleased
+## 1.1.0 — 2026-08-31
 
 Flags, experiments and personalizations become readable from the server. Additive:
 nothing in 1.0.0 changed behaviour, and no existing method, argument or export was
