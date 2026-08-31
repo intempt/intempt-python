@@ -16,6 +16,14 @@
  * An entry may be allowed — hashing has legitimate non-bucketing uses, idempotency keys and cache
  * keys among them — by listing it in the sidecar allowlist with a reason. An allowlist entry that
  * no longer matches anything is itself an error, so the file cannot silently rot.
+ *
+ * A configured root that does not exist, or a run that reads zero files, is an error rather than a
+ * pass. `walk` returns nothing for a missing directory, so without that check this script prints
+ * `OK — scanned src` and exits 0 in a tree with no `src` at all. It was measured doing exactly
+ * that: the Android copy defaulted to a directory that repo does not have and passed for as long
+ * as it existed, and this copy still did on 2026-08-31. Renaming or moving a source root is a
+ * normal refactor, and it must fail this guard loudly instead of disarming it silently — so the
+ * file count is printed on success too, which is what makes a disarmed run visible in a CI log.
  */
 
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
@@ -53,8 +61,17 @@ const allow = existsSync(allowPath) ? JSON.parse(readFileSync(allowPath, 'utf8')
 const seen = new Set();
 const hits = [];
 
+const missing = [];
+let scanned = 0;
+
 for (const r of roots) {
-  for (const file of walk(join(root, r))) {
+  const dir = join(root, r);
+  if (!existsSync(dir)) {
+    missing.push(r);
+    continue;
+  }
+  for (const file of walk(dir)) {
+    scanned += 1;
     const rel = relative(root, file);
     readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
       if (/^\s*(\/\/|#|\*|--)/.test(line)) return; // a comment explaining the rule is not a breach
@@ -77,6 +94,21 @@ if (hits.length) {
   );
 }
 
+// A guard that scanned nothing has not passed; it has abstained. Reported before the allowlist
+// checks below, because with zero files read every allowance also "matches nothing" and the stale
+// entry message would blame the allowlist for a missing directory.
+if (missing.length) {
+  problems.push(
+    `configured source root(s) do not exist under ${root}: ${missing.join(', ')} — ` +
+      'nothing was scanned there, so this run proves nothing'
+  );
+}
+if (!scanned) {
+  problems.push(
+    `scanned 0 source files under ${roots.join(', ')} — a guard that reads nothing cannot report OK`
+  );
+}
+
 // The reverse check. Without it the allowlist becomes a place to park anything, and a stale entry
 // hides the fact that its justification no longer applies.
 const stale = Object.keys(allow).filter((k) => !seen.has(k));
@@ -94,5 +126,6 @@ if (problems.length) {
   process.exit(1);
 }
 console.log(
-  `no-local-bucketing OK — scanned ${roots.join(', ')}, ${Object.keys(allow).length} documented allowance(s)`
+  `no-local-bucketing OK — scanned ${scanned} file(s) under ${roots.join(', ')}, ` +
+    `${Object.keys(allow).length} documented allowance(s)`
 );

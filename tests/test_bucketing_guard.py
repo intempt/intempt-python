@@ -8,6 +8,10 @@ the class of gate that quietly stops gating.
 Both directions are asserted. A guard that only ever passes is indistinguishable from one that
 cannot fail, and the allowlist half is the part that rots: an entry matching nothing must be an
 error, or the allowlist becomes a place to park anything.
+
+The third direction is the one that was live here on 2026-08-31: a guard can also fail to fail by
+reading nothing at all. `scanned 0` and a missing root both used to print OK, which is why two of
+the cases below assert the count rather than the verdict.
 """
 
 from __future__ import annotations
@@ -51,7 +55,7 @@ pytestmark = [
 ]
 
 
-def _run(tmp_path: Path, source: str | None, allow: dict | None = None):
+def _run(tmp_path: Path, source: str | None, allow: dict | None = None, guard_src: str = "src"):
     """Drive the real script over a scratch tree via its own GUARD_ROOT/GUARD_SRC knobs."""
     root = tmp_path / "tree"
     scripts = root / "scripts"
@@ -67,7 +71,11 @@ def _run(tmp_path: Path, source: str | None, allow: dict | None = None):
         [NODE, str(scripts / SCRIPT_NAME)],
         capture_output=True,
         text=True,
-        env={"GUARD_ROOT": str(root), "GUARD_SRC": "src", "PATH": "/usr/bin:/bin:/usr/local/bin"},
+        env={
+            "GUARD_ROOT": str(root),
+            "GUARD_SRC": guard_src,
+            "PATH": "/usr/bin:/bin:/usr/local/bin",
+        },
     )
 
 
@@ -85,6 +93,28 @@ def test_a_clean_tree_passes(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "no-local-bucketing OK" in result.stdout
+    # The count is part of the contract, not decoration: a passing line that does not say how much
+    # it read cannot be told apart from a passing line that read nothing.
+    assert "scanned 1 file(s)" in result.stdout
+
+
+def test_a_source_root_that_does_not_exist_fails(tmp_path):
+    # `walk` returns nothing for a missing directory, so this printed OK and exited 0 — the exact
+    # shape that left the Android copy of this script disarmed while its CI job stayed green.
+    result = _run(tmp_path, CLEAN, guard_src="not-a-directory")
+
+    assert result.returncode == 1
+    assert "do not exist" in result.stderr
+    assert "not-a-directory" in result.stderr
+
+
+def test_a_run_that_reads_no_source_files_fails(tmp_path):
+    # The root exists and holds nothing this guard understands. Renaming a package or moving it out
+    # of `src` is a normal refactor; it must fail here rather than pass over zero files.
+    result = _run(tmp_path, None)
+
+    assert result.returncode == 1
+    assert "scanned 0 source files" in result.stderr
 
 
 def test_local_bucket_derivation_fails_the_build(tmp_path):
