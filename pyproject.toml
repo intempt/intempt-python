@@ -79,9 +79,12 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # exercise the same code paths the unit tests already cover, one process
 # removed. They still run in the `test` job, under the coverage gate.
 #
-# `guard` is excluded for the same reason and a stronger one: those tests drive
-# scripts/check-no-local-bucketing.mjs, which is JavaScript. mutmut mutates
-# src/intempt only, so no mutant can ever change what they assert -- their whole
-# contribution to this job is five node processes per mutant. Measured: leaving
-# them in took the job from 6m16s (cf407e1) past 50 minutes.
+# `guard` is excluded for a stronger reason than cost: mutmut's source_paths is
+# src/intempt, and scripts/check-no-local-bucketing.mjs is JavaScript, so no
+# mutant it generates can change what those tests assert. They would pass under
+# every mutant by construction -- contributing no signal at all, and five node
+# subprocesses per mutant on top. They still run in the `test` job.
+#
+# No timing claim is made here. The runtime of this job WITH them included was
+# never measured: that run was cancelled 3m18s in, before it finished.
 pytest_add_cli_args = ["-m", "not sample and not guard"]
