@@ -30,6 +30,26 @@ to this repo. Where the two disagree, the contract wins and this file is the bug
   programming error the caller can fix, so it fails loudly at the call site. A 5xx is a runtime
   condition to absorb.
 
+## What the flag path validates before it sends
+
+The three checks below exist because the alternative is not an error — it is the caller's default,
+returned forever, with one warning line. A flag that is dead in production is indistinguishable
+from a flag deliberately serving its default, so each of these fails at the call site instead.
+
+- **The identity must be one the service can answer.** `buildAudienceRequest` takes the PROFILE
+  branch on a source id plus a non-blank profile id, falls to USER on a user id, and otherwise
+  raises. `FlagContext` is checked against exactly that before a request is made.
+- **The key must match `^[a-zA-Z0-9_-]+$`.** The service validates every name against that
+  expression and answers a violation with a 400 — which the flag path absorbs identically to a key
+  that was never created. `pricing.cta` is a typo you want to find in development.
+- **`device` is sent on every request and is load-bearing.** A null device becomes the SQL
+  predicate `"0"` server-side, which is false for every row, so omitting it returns zero
+  experiences rather than an error. `tests/test_flags.py` asserts it goes over the wire.
+
+`session_id` is not validated because it is genuinely optional, but it is not inert: an experience
+whose display is `once` or `once_per_visit` is served against a stored session value, so without
+one the second read of such a key returns nothing and every exposure lands in one bucket.
+
 ## Errors
 
 Two tiers, and they are not interchangeable: a configuration mistake surfaces when the config is
@@ -52,10 +72,22 @@ A divergence here does not fail any test; it ingests cleanly and never appears i
 
 ## Credentials
 
-The evaluation endpoint requires a **server** credential, sent as HTTP **Basic** — not Bearer. A
-public key holds users and accounts and nothing else, and the response describes how every
-experience in the project targets, so a public key is refused there. Never log the credential and
-never put it in a URL.
+**What this SDK does, which is the only part settled here.** One `api_key` in `<prefix>.<secret>`
+form serves ingest and evaluation alike, sent as HTTP **Basic** — not Bearer — on every request
+including `POST /optimization/choose-api`. Never log the credential and never put it in a URL.
+
+**What is NOT settled: whether evaluation should require a credential distinct from the ingest
+one.** An earlier draft of this file asserted that the endpoint takes a *server* credential and
+refuses a public key. That assertion is withdrawn: it was never verified against the service, and
+it contradicted this SDK's own transport, which accepts a key its error text calls public and then
+sends it to that endpoint. If it had been true, the flag surface could not work at all.
+
+The question behind it is real — the evaluation response describes how every experience in the
+project targets, which is not obviously public — but it is a **product decision about the
+credential model, and it is unruled**. It is not settleable inside an SDK repo, and this file must
+not settle it by describing a rule nobody made. **Owner: Sid.** Until it is ruled, treat the
+paragraph above as the contract and do not re-add a claim about what the endpoint refuses without
+a reading of the service's security configuration to cite.
 
 ## Python specifics
 

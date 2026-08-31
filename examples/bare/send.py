@@ -97,7 +97,16 @@ def main() -> int:
             # Ask for a KEY. Whether it names an experiment, a personalization
             # or a flag is the platform's business, and this call does not
             # change when that does.
-            context = FlagContext(user_id=user_id, profile_id="device-abc")
+            # One of user_id, or profile_id with a source_id configured on the
+            # client -- anything else the service cannot answer, so the SDK
+            # refuses it here instead of returning your default forever.
+            # Assignment derives from ONE identifier: with a user_id present it
+            # is the user_id, and the profile_id below is not part of that key.
+            # session_id scopes the exposure and is what makes a key whose
+            # display is "once" or "once_per_visit" readable more than once.
+            context = FlagContext(
+                user_id=user_id, profile_id="device-abc", session_id="session-abc"
+            )
 
             # The default is not optional and it is a real decision: it is what
             # you get when Intempt cannot be reached. Choose the behaviour you
