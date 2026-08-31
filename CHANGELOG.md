@@ -1,6 +1,45 @@
 # Changelog
 
-## 1.0.0 — unreleased
+## 1.1.0 — unreleased
+
+Flags, experiments and personalizations become readable from the server. Additive:
+nothing in 1.0.0 changed behaviour, and no existing method, argument or export was
+touched, so upgrading from 1.0.0 cannot change what an existing integration does.
+
+### Added
+
+- `variation`, `bool_variation`, `string_variation`, `number_variation` and
+  `json_variation` read one key; `all_flags` reads every key assigned to a person
+  in one call. `wait_for_initialization` is present and inert, because evaluation
+  here is remote and there is no local store to wait for.
+- `FlagContext(user_id=…, profile_id=…, session_id=…)` says who is being
+  evaluated. `session_id` is what makes a key whose display is `once` or
+  `once_per_visit` readable more than once; without one the platform stores a
+  single shared placeholder session and the second read returns your default.
+- `default_value` is required on every read, and is what you receive on a network
+  failure, a timeout, an unknown key or a malformed response. A service problem
+  never raises out of a flag read; a caller mistake — an unusable context, or a
+  key outside `[a-zA-Z0-9_-]` that the platform answers with a 400 — raises
+  immediately rather than resolving to your default forever.
+
+### Not exposed
+
+- **`variation_detail`.** It would carry a `reason`, and the platform does not
+  send one, so it could not tell a deliberate off state from a request that was
+  never answered. `FlagDetail` and `FlagReason` stay internal for the same reason.
+- **Local evaluation.** No rule engine, no flag store to poll, and no bucket
+  arithmetic — which side derives a bucket is a correctness question rather than a
+  performance one, and CI fails the build on a hashing primitive in `src`.
+
+### Corrects 1.0.0
+
+- 1.0.0 listed **experiments and personalizations** under *Deliberately absent*, on
+  the reasoning that they resolve a web experience against a page. That holds for
+  the `web` channel and not for the `api` one: a server SDK receives a value and
+  branches on it in code. The 1.0.0 entry below is left as written — it was true of
+  1.0.0 — and this is the correction.
+
+## 1.0.0 — 2026-08-16
 
 First release. Server-side SDK, Apache 2.0, derived from mixpanel-python; see
 [NOTICE](./NOTICE) for what was taken and what changed.

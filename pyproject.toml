@@ -45,6 +45,7 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers"
 markers = [
   "sample: runs a sample app in a subprocess; excluded from the mutation run only",
+  "guard: drives a CI guard script in a node subprocess; excluded from the mutation run only",
 ]
 
 [tool.coverage.run]
@@ -77,4 +78,13 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # turns a 25-minute job into a 3-hour one for very little extra signal: they
 # exercise the same code paths the unit tests already cover, one process
 # removed. They still run in the `test` job, under the coverage gate.
-pytest_add_cli_args = ["-m", "not sample"]
+#
+# `guard` is excluded for a stronger reason than cost: mutmut's source_paths is
+# src/intempt, and scripts/check-no-local-bucketing.mjs is JavaScript, so no
+# mutant it generates can change what those tests assert. They would pass under
+# every mutant by construction -- contributing no signal at all, and five node
+# subprocesses per mutant on top. They still run in the `test` job.
+#
+# No timing claim is made here. The runtime of this job WITH them included was
+# never measured: that run was cancelled 3m18s in, before it finished.
+pytest_add_cli_args = ["-m", "not sample and not guard"]
