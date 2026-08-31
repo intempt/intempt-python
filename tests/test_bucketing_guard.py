@@ -40,10 +40,15 @@ def _find_script() -> Path | None:
 
 SCRIPT = _find_script()
 
-pytestmark = pytest.mark.skipif(
-    NODE is None or SCRIPT is None,
-    reason="the guard is a node script run from a checkout; CI installs node for it",
-)
+pytestmark = [
+    # Excluded from the mutation run: mutmut mutates src/intempt only, so no mutant can change
+    # what a JavaScript guard does, and each test here spawns a node process on every mutant.
+    pytest.mark.guard,
+    pytest.mark.skipif(
+        NODE is None or SCRIPT is None,
+        reason="the guard is a node script run from a checkout; CI installs node for it",
+    ),
+]
 
 
 def _run(tmp_path: Path, source: str | None, allow: dict | None = None):
