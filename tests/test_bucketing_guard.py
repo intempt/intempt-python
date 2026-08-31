@@ -20,10 +20,29 @@ from pathlib import Path
 import pytest
 
 NODE = shutil.which("node")
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check-no-local-bucketing.mjs"
+SCRIPT_NAME = "check-no-local-bucketing.mjs"
+
+
+def _find_script() -> Path | None:
+    """Walk up for the real script rather than assuming the tree we are run from.
+
+    mutmut copies the suite into ``mutants/`` and runs it from there, and ``mutants/`` has no
+    ``scripts/`` — so ``parents[1]`` resolves to a path that does not exist and the whole mutation
+    gate fails on collection rather than on a mutant. Walking up finds the checkout in both
+    layouts.
+    """
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "scripts" / SCRIPT_NAME
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+SCRIPT = _find_script()
 
 pytestmark = pytest.mark.skipif(
-    NODE is None, reason="the guard is a node script; CI installs node for it"
+    NODE is None or SCRIPT is None,
+    reason="the guard is a node script run from a checkout; CI installs node for it",
 )
 
 
@@ -34,12 +53,13 @@ def _run(tmp_path: Path, source: str | None, allow: dict | None = None):
     src = root / "src" / "pkg"
     src.mkdir(parents=True)
     scripts.mkdir(parents=True)
+    assert SCRIPT is not None
     shutil.copy(SCRIPT, scripts / SCRIPT.name)
     (scripts / "no-local-bucketing-allow.json").write_text(json.dumps(allow if allow else {}))
     if source is not None:
         (src / "flags.py").write_text(source)
     return subprocess.run(
-        [NODE, str(scripts / SCRIPT.name)],
+        [NODE, str(scripts / SCRIPT_NAME)],
         capture_output=True,
         text=True,
         env={"GUARD_ROOT": str(root), "GUARD_SRC": "src", "PATH": "/usr/bin:/bin:/usr/local/bin"},
