@@ -49,7 +49,6 @@ other short-lived processes.
 | `track_batch(events)` | `None` | `POST …/track`, chunked |
 | `identify(**options)` | `None` | `POST …/track` (reserved `Identify`) |
 | `group(account_id=…, **options)` | `None` | `POST …/track` (reserved `Identify`) |
-| `alias(user_id=…, previous_user_id=…)` | `None` | `POST …/track` (reserved `Identify`) |
 | `consent.grant(**options)` | `None` | `POST …/consents/data` |
 | `consent.revoke(**options)` | `None` | `POST …/consents/data` |
 | `ecommerce.product_viewed(product_id=…, **ids)` | `None` | `POST …/track` |

@@ -116,23 +116,6 @@ class TestIdentity:
         assert payload["accountId"] == "acme"
         assert payload["accountAttributes"] == {"tier": "ent"}
 
-    def test_alias_carries_both_identities(self, client, server):
-        client().alias(user_id="new", previous_user_id="old")
-        payload = server.requests[0].body["track"][0]["payload"][0]
-        assert payload["userId"] == "new"
-        assert payload["anotherUserId"] == "old"
-
-    @pytest.mark.parametrize(
-        "kwargs,field",
-        [
-            ({"user_id": " ", "previous_user_id": "old"}, "user_id"),
-            ({"user_id": "new", "previous_user_id": " "}, "previous_user_id"),
-        ],
-    )
-    def test_alias_names_the_blank_field(self, client, kwargs, field):
-        with pytest.raises(IntemptConfigError, match=f"{field} must be a non-empty string"):
-            client().alias(**kwargs)
-
 
 class TestEcommerce:
     def test_product_viewed(self, client, server):

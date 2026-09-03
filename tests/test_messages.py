@@ -49,7 +49,7 @@ def client(server):
 
 
 class TestHelpersSpellTheMethodAndField:
-    @pytest.mark.parametrize("method", ["track", "group", "alias", "recommend"])
+    @pytest.mark.parametrize("method", ["track", "group", "identify", "recommend"])
     @pytest.mark.parametrize("field", ["user_id", "product_id", "feed_id"])
     def test_non_blank_names_both_the_method_and_the_field(self, method, field):
         with pytest.raises(IntemptConfigError) as excinfo:
@@ -153,19 +153,6 @@ class TestIdentityMessages:
             client.group(user_id="u1", account_id=value)
 
         assert message(excinfo) == "group: account_id must be a non-empty string"
-
-    @pytest.mark.parametrize(
-        ("kwargs", "field"),
-        [
-            ({"user_id": "", "previous_user_id": "old"}, "user_id"),
-            ({"user_id": "new", "previous_user_id": ""}, "previous_user_id"),
-        ],
-    )
-    def test_alias_names_whichever_side_is_missing(self, client, kwargs, field):
-        with pytest.raises(IntemptConfigError) as excinfo:
-            client.alias(**kwargs)
-
-        assert message(excinfo) == f"alias: {field} must be a non-empty string"
 
 
 class TestCommerceMessages:
