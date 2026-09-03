@@ -107,7 +107,7 @@ print(f"  profile: {user_id}{' (stable)' if USER_ID else ' (ephemeral)'}\n")
 print("  project inputs")
 print("  " + "-" * 76)
 for name, value, used_by in [
-    ("stable user_id", USER_ID, "identify, track, group, alias, consent"),
+    ("stable user_id", USER_ID, "identify, track, group, consent"),
     ("account_id (optional)", ACCOUNT_ID, "group — created automatically if absent"),
     ("feed id", FEED_ID, "recommend"),
     ("product_id", PRODUCT_ID, "ecommerce.*"),
@@ -197,11 +197,6 @@ step(
         account_id=ACCOUNT_ID or "sdk-e2e-account",
         attributes={"tier": "e2e"},
     ),
-)
-
-step(
-    "alias",
-    lambda: client.alias(user_id=user_id, previous_user_id=f"sdk-e2e-prev-{uuid.uuid4().hex[:8]}"),
 )
 
 # --- commerce ---------------------------------------------------------------

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- **`alias()` — breaking.** Linking two user identities is the platform's job,
+  not the caller's. Ingestion already converges two user ids that ever share an
+  identifier — device, email, phone — onto one root, with nobody declaring
+  anything. `alias()` only reached the case of two ids that never co-occur,
+  which is an id-scheme migration and belongs in a server-side backfill. A
+  wrong call permanently fused two real people and there is no unmerge.
+  `identify()` is unchanged and remains the stitch trigger.
+
 ## 1.1.0 — 2026-08-31
 
 Flags, experiments and personalizations become readable from the server. Additive:

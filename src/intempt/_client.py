@@ -227,16 +227,6 @@ class Intempt:
             ]
         )
 
-    def alias(self, *, user_id: str, previous_user_id: str, **options: Any) -> None:
-        non_blank(user_id, "alias", "user_id")
-        non_blank(previous_user_id, "alias", "previous_user_id")
-        event = options.pop("event", None)
-        item = self._build_event(
-            self._reserved_name(event, "alias"), {**options, "user_id": user_id}
-        )
-        item["payload"][0]["anotherUserId"] = previous_user_id
-        self._submit([item])
-
     # -- decisions out ----------------------------------------------------
 
     def recommend(
@@ -527,9 +517,7 @@ class Intempt:
         if not isinstance(event, str) or not event.strip():
             raise IntemptConfigError(f"{method}: event name is required")
         if event.strip().lower() in _RESERVED:
-            raise IntemptConfigError(
-                f'{method}: "{event}" is reserved; use identify(), group() or alias()'
-            )
+            raise IntemptConfigError(f'{method}: "{event}" is reserved; use identify() or group()')
         return event
 
     @staticmethod

@@ -34,7 +34,6 @@ Identical across all three, allowing for language idiom (`snake_case` in Python,
 | `track_batch(events)` | same, chunked at `max_request_events` |
 | `identify(options)` | same, reserved event `Identify` |
 | `group(options)` | same, reserved event `Identify` |
-| `alias(options)` | same, reserved event `Identify` |
 | `consent.grant(options)` / `consent.revoke(options)` | `POST …/consents/data` |
 | `ecommerce.product_viewed / added_to_cart / ordered` | `POST …/track` |
 | `recommend(options)` | `POST …/feeds/{feedId}/data` |
