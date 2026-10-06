@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: intempt-ubuntu-github-runner
     environment: pypi
     permissions:
       contents: write   # create the GitHub Release
