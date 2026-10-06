@@ -15,7 +15,7 @@ jobs:
   # internally consistent. Runs without install so it cannot be skipped.
   bucketing:
     name: Server-only bucketing
-    runs-on: ubuntu-latest
+    runs-on: intempt-ubuntu-github-runner
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,7 +27,7 @@ jobs:
           GUARD_SRC: src
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: intempt-ubuntu-github-runner
     strategy:
       fail-fast: false
       matrix:
@@ -60,7 +60,7 @@ jobs:
     #
     # 3.12 specifically: mutmut needs libcst, and libcst has no prebuilt wheel
     # for 3.14 yet, so it tries to compile Rust and fails.
-    runs-on: ubuntu-latest
+    runs-on: intempt-ubuntu-github-runner
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5
