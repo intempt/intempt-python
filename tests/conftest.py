@@ -51,6 +51,9 @@ class RecordingServer:
     def __init__(self) -> None:
         self.requests: list[Captured] = []
         self.replies: list[Reply] = []
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self._epoch = 0
         self._lock = threading.Lock()
         outer = self
 
@@ -76,11 +79,22 @@ class RecordingServer:
                         )
                     )
                     reply = outer.replies.pop(0) if outer.replies else Reply()
+                    epoch = outer._epoch
+                    outer.in_flight += 1
+                    outer.max_in_flight = max(outer.max_in_flight, outer.in_flight)
 
-                if reply.delay_s:
-                    import time as _t
+                try:
+                    if reply.delay_s:
+                        import time as _t
 
-                    _t.sleep(reply.delay_s)
+                        _t.sleep(reply.delay_s)
+                finally:
+                    with outer._lock:
+                        # A handler that outlived a reset (a client that timed
+                        # out and walked away) must not decrement the next
+                        # test's gauge below zero.
+                        if epoch == outer._epoch:
+                            outer.in_flight -= 1
 
                 payload = reply.body.encode("utf-8")
                 self.send_response(reply.status)
@@ -112,6 +126,9 @@ class RecordingServer:
         with self._lock:
             self.requests.clear()
             self.replies.clear()
+            self.in_flight = 0
+            self.max_in_flight = 0
+            self._epoch += 1
 
     def expect(self, *replies: Reply) -> None:
         with self._lock:
