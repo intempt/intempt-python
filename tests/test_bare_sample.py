@@ -10,6 +10,7 @@ Licensed under the Apache License, Version 2.0.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -38,6 +39,9 @@ def run(server: object, **overrides: str) -> subprocess.CompletedProcess[str]:
         "INTEMPT_USER_ID": USER,
         "INTEMPT_HOST": server.host,  # type: ignore[attr-defined]
         "INTEMPT_SCHEME": "http",
+        # setup-python on a self-hosted runner installs a shared-libpython
+        # interpreter that only finds libpython through LD_LIBRARY_PATH.
+        "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", ""),
     }
     env.update(overrides)
     env = {k: v for k, v in env.items() if v != ""}
