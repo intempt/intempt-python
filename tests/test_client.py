@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import datetime as _dt
+import json
 
 import pytest
 
@@ -323,3 +324,21 @@ class TestErrors:
         for view in views:
             assert secret not in view
             assert basic not in view
+
+
+class TestNoSessionOnTrack:
+    """INT-7446 (CONTRACT-R2 S5): a server SDK sends no sessionId on any write and never invents
+    one; a caller-supplied session id is accepted on flag calls only (tests/test_flags.py)."""
+
+    def test_no_write_carries_a_session_id(self, client, server):
+        c = client()
+        c.track("a", user_id="u1", session_id="s-1")
+        c.track_batch([{"event": "b", "user_id": "u1", "session_id": "s-1"}])
+        c.identify(user_id="u1", session_id="s-1")
+        c.group(user_id="u1", account_id="acc", session_id="s-1")
+        c.ecommerce.product_viewed(user_id="u1", product_id="p", session_id="s-1")
+
+        assert len(server.requests) == 5
+        for request in server.requests:
+            assert "sessionId" not in json.dumps(request.body)
+            assert "session" not in json.dumps(request.body).lower()
