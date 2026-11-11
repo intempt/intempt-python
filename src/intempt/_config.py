@@ -69,6 +69,9 @@ class ResolvedConfig:
     #: Hears each batch's final delivery failure once (INT-7444). Exceptions it
     #: raises are caught and logged.
     on_delivery_failure: Any = None
+    #: Hears each failed flag evaluation (INT-7454). Exceptions it raises are
+    #: swallowed and logged; the caller still gets its default.
+    on_flag_error: Any = None
 
     def project_path(self, suffix: str) -> str:
         from urllib.parse import quote
@@ -112,7 +115,7 @@ def _is_positive_long(value: str) -> bool:
     )
 
 
-_HOOKS = ("on_delivery_failure",)
+_HOOKS = ("on_delivery_failure", "on_flag_error")
 
 
 def _callable_or_none(value: Any, name: str) -> Any:

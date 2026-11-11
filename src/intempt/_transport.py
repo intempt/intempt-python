@@ -54,6 +54,11 @@ class ApiKeyCredentials:
     def authorization_header(self) -> str:
         return self._header
 
+    @property
+    def prefix(self) -> str:
+        """The public half, safe to log; it is what tells an operator which key was refused."""
+        return self._prefix
+
     def __repr__(self) -> str:
         return f"ApiKeyCredentials(prefix={self._prefix!r}, secret=<redacted>)"
 

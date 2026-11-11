@@ -7,6 +7,7 @@ Licensed under the Apache License, Version 2.0.
 from __future__ import annotations
 
 import datetime as _dt
+import socket
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -16,8 +17,15 @@ from typing import Any
 from ._buffer import Buffer
 from ._config import ResolvedConfig, merge_config, resolve_config
 from ._delivery import DeliveryFailure, FlushResult, deliver, event_ids
-from ._errors import IntemptConfigError
-from ._flags import IDENTITY_REQUIREMENT, KEY_PATTERN, UNANSWERED, FlagContext, FlagDetail
+from ._errors import IntemptApiError, IntemptConfigError
+from ._flags import (
+    IDENTITY_REQUIREMENT,
+    KEY_PATTERN,
+    UNANSWERED,
+    FlagContext,
+    FlagDetail,
+    FlagError,
+)
 from ._transport import Transport
 from ._util import chunk, compact, ensure_timestamp, non_blank, require_identifier
 
@@ -152,6 +160,8 @@ class Intempt:
         self._closed = False
         #: Injectable so a test can assert the resend wait without taking it.
         self._sleep = time.sleep
+        #: 401/403 on a flag call is logged at error once per instance, then at debug.
+        self._flag_auth_logged = False
 
         self._buffer: Buffer | None = None
         if self._config.batch is not None:
@@ -288,31 +298,36 @@ class Intempt:
 
     # -- flags ------------------------------------------------------------
 
-    def variation(self, key: str, context: FlagContext, default_value: Any) -> Any:
+    def variation(
+        self, key: str, context: FlagContext, default_value: Any, *, disable_exposure: bool = False
+    ) -> Any:
         """The value assigned to this person for ``key``, or ``default_value``.
 
         Ask for a key, never a mode. Whether the key names an experiment, a personalization or a
-        flag is the platform's business.
+        flag is the platform's business. Reading a key records the exposure; pass
+        ``disable_exposure=True`` for a read that does not show the value (pre-render, prefetch).
         """
-        return self._variation_detail(key, context, default_value).value
+        return self.variation_detail(
+            key, context, default_value, disable_exposure=disable_exposure
+        ).value
 
-    def _variation_detail(self, key: str, context: FlagContext, default_value: Any) -> FlagDetail:
-        """Internal. NOT public, deliberately.
+    def variation_detail(
+        self, key: str, context: FlagContext, default_value: Any, *, disable_exposure: bool = False
+    ) -> FlagDetail:
+        """The value plus why (INT-7454).
 
-        It returns a ``reason``, and the platform does not send one: a held-back person's
-        experience is absent from the evaluation response entirely rather than present with a
-        cause. So every reason would read ``off`` — including for someone who WAS targeted and
-        did receive the variant. That is a wrong answer, not a missing one, and a method whose
-        only job is explaining why must not guess.
-
-        :meth:`variation` uses it for the value, which is correct either way. It becomes public
-        when the serving contract carries a reason.
+        ``reason`` is ``error`` with :attr:`FlagDetail.error` set when the evaluation failed and
+        the default was returned. Otherwise it is ``off`` whether or not a value was served: the
+        platform sends no reason, and a held-back person's experience is simply absent from the
+        response, so this method does not guess between "off" and "not targeted" (INT-7457).
         """
         self._assert_open()
         self._assert_flag_key(key, "variation")
         self._assert_flag_context(context, "variation")
 
-        choices = self._choose_or_empty(context, [key])
+        choices, error = self._choose(context, [key], key=key, exposure=not disable_exposure)
+        if error is not None:
+            return FlagDetail(value=default_value, reason="error", error=error)
         for choice in choices:
             if choice.get("name") == key:
                 body = choice.get("body")
@@ -324,8 +339,12 @@ class Intempt:
                 )
         return FlagDetail(value=default_value, reason=UNANSWERED)
 
-    def all_flags(self, context: FlagContext) -> dict[str, Any]:
+    def all_flags(self, context: FlagContext, *, log_exposure: bool = False) -> dict[str, Any]:
         """Every key assigned to this person, in one call.
+
+        Evaluates without recording exposures (INT-7456): a bulk read is not a display, and
+        counting every key as seen inflated exposures for variants nobody rendered. Read the key
+        you show with :meth:`variation`, or pass ``log_exposure=True`` to record them all.
 
         A key the service answered without a body is OMITTED rather than mapped to ``None``.
         ``variation`` treats a null body as "no value was served" and hands back the caller's
@@ -335,25 +354,47 @@ class Intempt:
         self._assert_open()
         self._assert_flag_context(context, "all_flags")
         out: dict[str, Any] = {}
-        for choice in self._choose_or_empty(context, None):
+        choices, _error = self._choose(context, None, key=None, exposure=log_exposure)
+        for choice in choices:
             name = choice.get("name")
             body = choice.get("body")
             if name and body is not None:
                 out[name] = body
         return out
 
-    def bool_variation(self, key: str, context: FlagContext, default_value: bool) -> bool:
-        value = self.variation(key, context, default_value)
+    def bool_variation(
+        self,
+        key: str,
+        context: FlagContext,
+        default_value: bool,
+        *,
+        disable_exposure: bool = False,
+    ) -> bool:
+        value = self.variation(key, context, default_value, disable_exposure=disable_exposure)
         # A served value of the wrong type is a misconfiguration, not something to coerce:
         # bool("false") is True, and a silent coercion is indistinguishable from a real answer.
         return value if isinstance(value, bool) else default_value
 
-    def string_variation(self, key: str, context: FlagContext, default_value: str) -> str:
-        value = self.variation(key, context, default_value)
+    def string_variation(
+        self,
+        key: str,
+        context: FlagContext,
+        default_value: str,
+        *,
+        disable_exposure: bool = False,
+    ) -> str:
+        value = self.variation(key, context, default_value, disable_exposure=disable_exposure)
         return value if isinstance(value, str) else default_value
 
-    def number_variation(self, key: str, context: FlagContext, default_value: float) -> float:
-        value = self.variation(key, context, default_value)
+    def number_variation(
+        self,
+        key: str,
+        context: FlagContext,
+        default_value: float,
+        *,
+        disable_exposure: bool = False,
+    ) -> float:
+        value = self.variation(key, context, default_value, disable_exposure=disable_exposure)
         # bool is a subclass of int in Python, so True would otherwise pass as the number 1.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return default_value
@@ -363,9 +404,14 @@ class Intempt:
         return float(value)
 
     def json_variation(
-        self, key: str, context: FlagContext, default_value: Mapping[str, Any]
+        self,
+        key: str,
+        context: FlagContext,
+        default_value: Mapping[str, Any],
+        *,
+        disable_exposure: bool = False,
     ) -> Mapping[str, Any]:
-        value = self.variation(key, context, default_value)
+        value = self.variation(key, context, default_value, disable_exposure=disable_exposure)
         return value if isinstance(value, Mapping) else default_value
 
     def wait_for_initialization(self, timeout_ms: int | None = None) -> None:
@@ -386,7 +432,7 @@ class Intempt:
 
         ``non_blank`` is not enough: ``ExperienceApiChooseRequest`` validates every name against
         ``^[a-zA-Z0-9_-]*$``, so ``pricing.cta`` or ``checkout v2`` is answered with a 400. A 400
-        reaches :meth:`_choose_or_empty` as a transport failure and is absorbed into the caller's
+        reaches :meth:`_choose` as a transport failure and is absorbed into the caller's
         default — permanently, and identically to a key that was never created. Failing at the
         call site is the difference between a typo found in development and a flag that is dead
         in production.
@@ -402,7 +448,7 @@ class Intempt:
         """A context the service cannot answer is a caller mistake, so it raises here.
 
         ``buildAudienceRequest`` raises on an identity that is neither PROFILE nor USER. That
-        surfaces as a 5xx, which :meth:`_choose_or_empty` absorbs into the caller's default with
+        surfaces as a 5xx, which :meth:`_choose` absorbs into the caller's default with
         one warning line — so a client constructed without a ``source_id`` and read with only a
         ``profile_id`` would serve defaults forever and look like a working integration. Every
         other identified call in this SDK validates its identity up front; this is the same rule.
@@ -412,10 +458,10 @@ class Intempt:
         if not context.has_identity(self._config.source_id):
             raise IntemptConfigError(f"{method}: {IDENTITY_REQUIREMENT}")
 
-    def _choose_or_empty(
-        self, context: FlagContext, names: list[str] | None
-    ) -> list[Mapping[str, Any]]:
-        """A transport failure returns no choices rather than raising.
+    def _choose(
+        self, context: FlagContext, names: list[str] | None, *, key: str | None, exposure: bool
+    ) -> tuple[list[Mapping[str, Any]], FlagError | None]:
+        """A failure returns no choices and a :class:`FlagError` rather than raising.
 
         This is the entire reason ``default_value`` is required: a network failure, a 5xx or a
         timeout must resolve to the value the caller chose. A flag SDK that raises when the
@@ -440,22 +486,49 @@ class Intempt:
                 # Scopes the exposure and gates a `once` / `once_per_visit` display. Absent, the
                 # service stores and compares a single shared placeholder session.
                 "sessionId": context.session_id,
+                # Absent means record, so a backend without the field behaves as before
+                # (CONTRACT-R2 S4). False evaluates without spending a ONCE gate or publishing.
+                "exposure": None if exposure else False,
             }
         )
         try:
             response = self._transport.post(
                 self._config.project_path("/optimization/choose-api"), body
             )
-        # Any transport failure must yield the caller's default. (Deliberately broad; note that
-        # ruff's `select` here carries no BLE rule, so a `noqa: BLE001` would suppress nothing
-        # and only look like a guard.)
-        except Exception:
-            self._config.logger.warning("[intempt] flag evaluation failed, using defaults")
-            return []
-        if not isinstance(response, Mapping):
-            return []
-        choices = response.get("choices")
-        return list(choices) if isinstance(choices, list) else []
+        # Deliberately broad: any failure must yield the caller's default.
+        except Exception as exc:
+            return [], self._flag_failed(_flag_error(key, exc))
+        choices = response.get("choices", []) if isinstance(response, Mapping) else None
+        if not isinstance(choices, list):
+            return [], self._flag_failed(FlagError(key=key, kind="parse"))
+        return list(choices), None
+
+    def _flag_failed(self, error: FlagError) -> FlagError:
+        logger = self._config.logger
+        if error.kind == "auth" and not self._flag_auth_logged:
+            self._flag_auth_logged = True
+            logger.error(
+                "[intempt] flag evaluation refused with %s: check the API key (prefix %s) and "
+                "source_id %s; serving defaults",
+                error.status,
+                self._config.credentials.prefix,
+                self._config.source_id,
+            )
+        elif error.kind == "auth":
+            logger.debug("[intempt] flag evaluation refused with %s; using defaults", error.status)
+        else:
+            logger.warning(
+                "[intempt] flag evaluation failed (%s), using defaults",
+                error.kind,
+                extra={"status": error.status},
+            )
+        hook = self._config.on_flag_error
+        if hook is not None:
+            try:
+                hook(error)
+            except Exception:
+                logger.error("[intempt] on_flag_error raised", exc_info=True)
+        return error
 
     # -- privacy ----------------------------------------------------------
 
@@ -659,6 +732,20 @@ class Intempt:
 
 def _present(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _flag_error(key: str | None, exc: Exception) -> FlagError:
+    status = exc.status if isinstance(exc, IntemptApiError) else None
+    if status in (401, 403):
+        return FlagError(key=key, kind="auth", status=status)
+    if status is not None and status >= 500:
+        return FlagError(key=key, kind="server", status=status)
+    if status is not None:
+        return FlagError(key=key, kind="bad_request", status=status)
+    timed_out = isinstance(exc, IntemptApiError) and exc.timed_out
+    if timed_out or isinstance(exc, socket.timeout):
+        return FlagError(key=key, kind="timeout")
+    return FlagError(key=key, kind="network")
 
 
 def _now_ms() -> int:

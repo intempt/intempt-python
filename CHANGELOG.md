@@ -18,6 +18,21 @@
   `close()` return `FlushResult(sent, failed)`. Code that caught `IntemptApiError`
   around a write must read the return value or the listener instead. Bad arguments and
   a closed client still raise; `recommend()` still raises.
+- **`all_flags()` no longer records exposures** (INT-7456). It sends `exposure: false`,
+  so a bulk read does not count every key as seen; read the key you show with
+  `variation()`, or pass `all_flags(..., log_exposure=True)`. Needs the matching
+  audience-service change; until then the service ignores the field.
+
+### Added
+
+- **`on_flag_error` and public `variation_detail()`** (INT-7454). A failed evaluation
+  still returns the default, and now calls `on_flag_error(FlagError(key, kind, status))`
+  with `kind` one of `auth`, `bad_request`, `server`, `timeout`, `network`, `parse`.
+  `variation_detail()` returns `FlagDetail(value, reason, error)` with `reason="error"`
+  on a failure; a 200 with no choice stays `off`. 401/403 is logged at error level once
+  per client, naming the key prefix and `source_id`, then at debug.
+- **`disable_exposure=True`** on `variation`, `variation_detail` and the typed variants
+  (INT-7456), for a read that does not display the value.
 
 ## 2.1.0 — unreleased
 

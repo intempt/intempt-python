@@ -92,8 +92,10 @@ a reading of the service's security configuration to cite.
 ## Python specifics
 
 - **Naming follows the language, not the contract's spelling.** The contract's `allFlags` is
-  `all_flags` here and `variationDetail` is `_variation_detail`; the shape is identical, the case is
-  not. A leading underscore is how this SDK expresses "withheld".
+  `all_flags` here, `variationDetail` is `variation_detail` (public since INT-7454),
+  `onFlagError` is `on_flag_error`, `onDeliveryFailure` is `on_delivery_failure` and
+  `disableExposure` is `disable_exposure`; the shape is identical, the case is not. A contract
+  `shutdown()` is `close()` here, the name this SDK already had.
 - **The mutation threshold is 70, not 85.** That is a measured decision, not an oversight: mutmut's
   operator set produces a materially different denominator from Stryker's and Infection's, and 70 here
   was the level at which surviving mutants were genuinely equivalent rather than untested. Raising it

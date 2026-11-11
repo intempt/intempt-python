@@ -13,7 +13,7 @@ from ._client import COMMERCE_EVENTS, IDENTIFY_EVENT, Consent, Ecommerce, Intemp
 from ._config import BatchOptions, ResolvedConfig
 from ._delivery import DeliveryFailure, FlushResult
 from ._errors import IntemptApiError, IntemptConfigError, IntemptError
-from ._flags import FlagContext
+from ._flags import FlagContext, FlagDetail, FlagError
 from ._transport import ApiKeyCredentials, Transport
 
 __version__ = "2.1.0"
@@ -35,5 +35,7 @@ __all__ = [
     "COMMERCE_EVENTS",
     "IDENTIFY_EVENT",
     "FlagContext",
+    "FlagDetail",
+    "FlagError",
     "__version__",
 ]
