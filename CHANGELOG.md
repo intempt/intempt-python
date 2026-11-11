@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.1.0 — unreleased
+
+### Changed
+
+- **`source_id` is validated at init** (INT-7455). It must be a positive 64-bit
+  integer as a string of digits (`^[1-9][0-9]{0,18}$`, at most
+  9223372036854775807), which is what the API parses. A value such as `"abc"`,
+  `"0"` or a 20-digit id used to pass init and then fail every track and consent
+  call; it now raises.
+- **Consent is sent while opted out** (INT-7437, ruling D-5). After `opt_out()`
+  consent records were dropped silently, so a person who had opted out could not
+  withdraw consent. Grant and revoke are now sent regardless of opt-out, as the
+  client SDKs do; tracking writes stay suppressed.
+- **A flag's detail reason no longer reads `reason` off the choose response**
+  (INT-7457). choose-api never sends one; the reason is the fixed `UNANSWERED`,
+  as intempt-php already reports. No public effect.
+
+### Fixed
+
+- **Buffer drop diagnostics no longer raise `KeyError` from a stdlib logger**
+  (INT-7440). They passed `extra={"name": ...}`, a reserved `LogRecord` key, so
+  with ERROR enabled (the default) `track()` on a stopped buffer or full queue,
+  and `flush()` on a single-event 413, raised. The key is now `event_name`.
+
 ## 2.0.0 — 2026-09-03
 
 ### Removed
