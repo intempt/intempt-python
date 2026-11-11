@@ -7,6 +7,7 @@ Licensed under the Apache License, Version 2.0.
 from __future__ import annotations
 
 import datetime as _dt
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +15,7 @@ from typing import Any
 
 from ._buffer import Buffer
 from ._config import ResolvedConfig, merge_config, resolve_config
+from ._delivery import DeliveryFailure, FlushResult, deliver, event_ids
 from ._errors import IntemptConfigError
 from ._flags import IDENTITY_REQUIREMENT, KEY_PATTERN, UNANSWERED, FlagContext, FlagDetail
 from ._transport import Transport
@@ -39,13 +41,15 @@ class Consent:
     def __init__(self, client: Intempt) -> None:
         self._client = client
 
-    def grant(self, **options: Any) -> None:
-        self._record("accept", options)
+    def grant(self, **options: Any) -> bool:
+        """True when the server accepted the record. A failure is reported, not raised."""
+        return self._record("accept", options)
 
-    def revoke(self, **options: Any) -> None:
-        self._record("reject", options)
+    def revoke(self, **options: Any) -> bool:
+        """True when the server accepted the record. A failure is reported, not raised."""
+        return self._record("reject", options)
 
-    def _record(self, action: str, options: Mapping[str, Any]) -> None:
+    def _record(self, action: str, options: Mapping[str, Any]) -> bool:
         name = "consent.grant" if action == "accept" else "consent.revoke"
         user_id = options.get("user_id")
         profile_id = options.get("profile_id")
@@ -87,7 +91,8 @@ class Consent:
                 "sourceId": str(config.source_id) if profile_id and config.source_id else None,
             }
         )
-        self._client._transport.post(config.project_path("/consents/data"), body)
+        path = config.project_path("/consents/data")
+        return self._client._deliver_now(lambda: self._client._transport.post(path, body), 1, ())
 
 
 class Ecommerce:
@@ -96,25 +101,25 @@ class Ecommerce:
     def __init__(self, client: Intempt) -> None:
         self._client = client
 
-    def product_viewed(self, *, product_id: str, **ids: Any) -> None:
+    def product_viewed(self, *, product_id: str, **ids: Any) -> bool:
         non_blank(product_id, "product_viewed", "product_id")
         require_identifier(ids, "product_viewed")
-        self._client._track_lines(
+        return self._client._track_lines(
             COMMERCE_EVENTS["product_viewed"], ids, [{"productId": product_id}]
         )
 
-    def added_to_cart(self, *, product_id: str, quantity: int, **ids: Any) -> None:
+    def added_to_cart(self, *, product_id: str, quantity: int, **ids: Any) -> bool:
         non_blank(product_id, "added_to_cart", "product_id")
         if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
             raise IntemptConfigError("added_to_cart: quantity must be a positive integer")
         require_identifier(ids, "added_to_cart")
-        self._client._track_lines(
+        return self._client._track_lines(
             COMMERCE_EVENTS["added_to_cart"],
             ids,
             [{"productId": product_id, "quantity": quantity}],
         )
 
-    def ordered(self, *, products: Sequence[Mapping[str, Any]], **ids: Any) -> None:
+    def ordered(self, *, products: Sequence[Mapping[str, Any]], **ids: Any) -> bool:
         if not isinstance(products, Sequence) or isinstance(products, (str, bytes)) or not products:
             raise IntemptConfigError("ordered: products must be a non-empty sequence")
         lines = []
@@ -130,7 +135,7 @@ class Ecommerce:
                 )
             lines.append(compact({"productId": product_id, "quantity": quantity}))
         require_identifier(ids, "ordered")
-        self._client._track_lines(COMMERCE_EVENTS["ordered"], ids, lines)
+        return self._client._track_lines(COMMERCE_EVENTS["ordered"], ids, lines)
 
 
 class Intempt:
@@ -145,6 +150,8 @@ class Intempt:
         self._transport = Transport(self._config, self._config.credentials)
         self._opted_in = True
         self._closed = False
+        #: Injectable so a test can assert the resend wait without taking it.
+        self._sleep = time.sleep
 
         self._buffer: Buffer | None = None
         if self._config.batch is not None:
@@ -153,6 +160,7 @@ class Intempt:
                 max_request_events=self._config.max_request_events,
                 logger=self._config.logger,
                 send=self._send,
+                report=self._report_delivery_failure,
             )
 
         self.consent = Consent(self)
@@ -160,17 +168,26 @@ class Intempt:
 
     # -- data in ----------------------------------------------------------
 
-    def track(self, event: str, **options: Any) -> None:
+    def track(self, event: str, **options: Any) -> bool:
+        """Queue (batch mode) or send (direct mode) one event.
+
+        Returns whether it was accepted: queued, or delivered when batching is off. A delivery
+        problem never raises (INT-7444); it reaches ``on_delivery_failure``. A bad argument or a
+        closed client still raises, because those are programming errors.
+        """
         self._assert_event_name(event, "track")
         require_identifier(options, "track")
-        self._submit([self._build_event(event, options)])
+        return self._submit([self._build_event(event, options)])
 
-    def track_batch(self, events: Sequence[Mapping[str, Any]]) -> None:
-        """Send many events, chunked so one oversized call is not one oversized request."""
+    def track_batch(self, events: Sequence[Mapping[str, Any]]) -> bool:
+        """Send many events, chunked so one oversized call is not one oversized request.
+
+        True when every event was accepted; see :meth:`track`.
+        """
         if not isinstance(events, Sequence) or isinstance(events, (str, bytes)):
             raise IntemptConfigError("track_batch: events must be a sequence")
         if not events:
-            return
+            return True
 
         wire = []
         for index, item in enumerate(events):
@@ -182,30 +199,22 @@ class Intempt:
             wire.append(self._build_event(name, rest))
 
         if self._buffer is not None or not self.is_opted_in():
-            self._submit(wire)
-            return
+            return self._submit(wire)
 
         groups = chunk(wire, self._config.max_request_events)
         if self._config.max_concurrent_requests <= 1:
-            for group in groups:
-                self._send(group)
-            return
+            return all([self._send_now(group) for group in groups])
 
-        # Bounded parallelism. Errors are re-raised after every worker settles,
-        # so a failure cannot leave siblings running unobserved.
         workers = min(self._config.max_concurrent_requests, len(groups))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(self._send, group) for group in groups]
-            errors = [f.exception() for f in futures]
-        for error in errors:
-            if error is not None:
-                raise error
+            results = list(pool.map(self._send_now, groups))
+        return all(results)
 
-    def identify(self, **options: Any) -> None:
+    def identify(self, **options: Any) -> bool:
         require_identifier(options, "identify")
         event = options.pop("event", None)
         traits = options.pop("traits", None)
-        self._submit(
+        return self._submit(
             [
                 self._build_event(
                     self._reserved_name(event, "identify"),
@@ -214,11 +223,11 @@ class Intempt:
             ]
         )
 
-    def group(self, *, account_id: str, **options: Any) -> None:
+    def group(self, *, account_id: str, **options: Any) -> bool:
         non_blank(account_id, "group", "account_id")
         event = options.pop("event", None)
         attributes = options.pop("attributes", None)
-        self._submit(
+        return self._submit(
             [
                 self._build_event(
                     self._reserved_name(event, "group"),
@@ -483,19 +492,27 @@ class Intempt:
 
     # -- lifecycle --------------------------------------------------------
 
-    def flush(self) -> None:
-        """Drain the buffer. A no-op when batching is off."""
-        if self._buffer is not None:
-            self._buffer.flush()
+    def flush(self) -> FlushResult:
+        """Drain the buffer and say how many events were sent and how many were given up on.
 
-    def close(self) -> None:
-        """Flush, then release the connection. The client is unusable after."""
-        if self._closed:
-            return
+        Never raises for a delivery problem. Zeroes when batching is off.
+        """
         if self._buffer is not None:
-            self._buffer.close()
+            return self._buffer.flush()
+        return FlushResult()
+
+    def close(self) -> FlushResult:
+        """Flush within the close budget, then release the connection. Unusable after.
+
+        This SDK's ``shutdown()``: anything still queued when the budget runs out counts as
+        failed and is reported as ``dropped``.
+        """
+        if self._closed:
+            return FlushResult()
+        result = self._buffer.close() if self._buffer is not None else FlushResult()
         self._closed = True
         self._transport.close()
+        return result
 
     def __enter__(self) -> Intempt:
         return self
@@ -556,7 +573,7 @@ class Intempt:
 
     def _track_lines(
         self, name: str, ids: Mapping[str, Any], lines: Sequence[Mapping[str, Any]]
-    ) -> None:
+    ) -> bool:
         """One event carrying several payload items, one per line.
 
         Kept bit-compatible with the 1.x commerce wire format: the lines share a
@@ -579,22 +596,51 @@ class Intempt:
             )
             for line in lines
         ]
-        self._submit([{"name": name, "payload": payload}])
+        return self._submit([{"name": name, "payload": payload}])
 
-    def _submit(self, events: list[dict[str, Any]]) -> None:
-        # A closed client raises; an opted-out client returns quietly. Silently
+    def _submit(self, events: list[dict[str, Any]]) -> bool:
+        # A closed client raises; an opted-out client returns False. Silently
         # discarding a write after close is how events get lost without anyone
         # being told.
         self._assert_open()
         if not self.is_opted_in() or not events:
-            return
+            return False
         if self._buffer is not None:
-            for event in events:
-                self._buffer.enqueue(event)
-            return
-        self._send(events)
+            return all([self._buffer.enqueue(event) for event in events])
+        return self._send_now(events)
 
-    def _send(self, events: list[dict[str, Any]]) -> None:
+    def _send_now(self, events: list[dict[str, Any]]) -> bool:
+        return self._deliver_now(lambda: self._send(events), len(events), event_ids(events))
+
+    def _deliver_now(self, send: Any, count: int, ids: tuple[str, ...]) -> bool:
+        """Direct mode: the same send table as the buffer, with no queue to keep a batch in."""
+        outcome, failure = deliver(send, count=count, ids=ids, sleep=self._sleep)
+        if failure is not None and outcome != "sent":
+            if outcome == "kept":
+                failure = DeliveryFailure(
+                    kind="dropped",
+                    event_count=failure.event_count,
+                    event_ids=failure.event_ids,
+                    terminal=True,
+                )
+            self._config.logger.error(
+                "[intempt] send failed; %d event(s) dropped",
+                count,
+                extra={"status": failure.status, "kind": failure.kind},
+            )
+            self._report_delivery_failure(failure)
+        return outcome == "sent"
+
+    def _report_delivery_failure(self, failure: DeliveryFailure) -> None:
+        listener = self._config.on_delivery_failure
+        if listener is None:
+            return
+        try:
+            listener(failure)
+        except Exception:
+            self._config.logger.error("[intempt] on_delivery_failure raised", exc_info=True)
+
+    def _send(self, events: list[dict[str, Any]]) -> bool:
         """Post one request. Also the buffer's send callback.
 
         The opt-out gate is repeated here because the buffer calls this directly.
@@ -606,8 +652,9 @@ class Intempt:
                 "[intempt] opted out; discarding %d buffered event(s) rather than sending",
                 len(events),
             )
-            return
+            return False
         self._transport.post(self._track_path(), {"track": events})
+        return True
 
 
 def _present(value: Any) -> bool:

@@ -125,8 +125,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(404, {"error": "no such route"})
 
         except IntemptApiError as exc:
-            # Every method raises. Nothing is swallowed, so a real app decides
-            # here whether the failure should reach the customer.
+            # Writes no longer raise on a failed send: they are reported to
+            # on_delivery_failure. What still reaches here is a call that
+            # answers with data, so a real app decides whether to fail the page.
             log.error("intempt rejected the write: %s", exc)
             return self._reply(502, {"error": "analytics write failed"})
         except ValueError as exc:

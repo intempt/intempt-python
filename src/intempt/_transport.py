@@ -149,8 +149,21 @@ class Transport:
         with self._lock:
             if self._closed:
                 raise IntemptApiError("client is closed")
+            conn = self._connection()
+            if conn.sock is None:
+                # Connected separately so a failure here is known to precede the
+                # write: that batch never reached the server and is safe to keep.
+                try:
+                    conn.connect()
+                except OSError as exc:
+                    self._drop_connection()
+                    raise IntemptApiError(
+                        str(exc) or type(exc).__name__,
+                        cause=exc,
+                        reached=False,
+                        timed_out=isinstance(exc, socket.timeout),
+                    ) from exc
             try:
-                conn = self._connection()
                 conn.request("POST", path, body=payload, headers=headers)
                 response = conn.getresponse()
                 raw = response.read().decode("utf-8", errors="replace")
@@ -159,12 +172,11 @@ class Transport:
             except socket.timeout as exc:
                 self._drop_connection()
                 raise IntemptApiError(
-                    f"request timed out after {self._config.timeout}s", cause=exc
+                    f"request timed out after {self._config.timeout}s", cause=exc, timed_out=True
                 ) from exc
             except (http.client.HTTPException, OSError) as exc:
-                # A pooled connection the server already closed raises here on
-                # the next use. Drop it so the retry gets a fresh socket rather
-                # than failing again on the same dead one.
+                # Also how a pooled connection the server already closed fails.
+                # Drop it so the next request gets a fresh socket.
                 self._drop_connection()
                 raise IntemptApiError(str(exc) or type(exc).__name__, cause=exc) from exc
 

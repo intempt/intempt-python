@@ -289,18 +289,20 @@ class TestLifecycle:
 
 
 class TestErrors:
+    # Delivery writes no longer raise (INT-7444), so the error surface is pinned on recommend(),
+    # which still does.
     def test_surfaces_a_500_with_status_and_body(self, client, server):
         server.expect(Reply(status=500, body='{"error":"boom"}'))
         with pytest.raises(IntemptApiError) as caught:
-            client().track("purchase", user_id="u1")
+            client().recommend(user_id="u1", feed_id="f", fields=["id"])
         assert caught.value.status == 500
         assert "boom" in caught.value.body
-        assert caught.value.retryable is True
+        assert caught.value.retryable is False
 
     def test_a_400_is_not_retryable(self, client, server):
         server.expect(Reply(status=400, body="bad"))
         with pytest.raises(IntemptApiError) as caught:
-            client().track("purchase", user_id="u1")
+            client().recommend(user_id="u1", feed_id="f", fields=["id"])
         assert caught.value.retryable is False
 
     def test_never_leaks_the_credential(self, client, server):
@@ -309,7 +311,7 @@ class TestErrors:
 
         server.expect(Reply(status=500, body="boom"))
         try:
-            client().track("purchase", user_id="u1")
+            client().recommend(user_id="u1", feed_id="f", fields=["id"])
         except IntemptApiError as exc:
             views = [
                 str(exc),

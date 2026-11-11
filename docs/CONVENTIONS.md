@@ -54,9 +54,9 @@ one the second read of such a key returns nothing and every exposure lands in on
 
 Two tiers, and they are not interchangeable: a configuration mistake surfaces when the config is
 built, and an API failure carries the status, the body and any `Retry-After`. A transport failure
-that never produced a response carries a **null** status — read as retryable, because a request
-that never arrived may well arrive next time, whereas a 400 fails identically however often it is
-repeated.
+that never produced a response carries a **null** status, and `reached` says whether the request
+left at all: only a request that never reached the server is safe to send again. `retryable` is
+true for 429 and 503 alone, the statuses the SDK resends once (INT-7436).
 
 ## Wire shape
 

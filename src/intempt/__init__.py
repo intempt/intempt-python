@@ -11,6 +11,7 @@ from __future__ import annotations
 from ._buffer import Buffer
 from ._client import COMMERCE_EVENTS, IDENTIFY_EVENT, Consent, Ecommerce, Intempt
 from ._config import BatchOptions, ResolvedConfig
+from ._delivery import DeliveryFailure, FlushResult
 from ._errors import IntemptApiError, IntemptConfigError, IntemptError
 from ._flags import FlagContext
 from ._transport import ApiKeyCredentials, Transport
@@ -23,6 +24,8 @@ __all__ = [
     "IntemptApiError",
     "IntemptConfigError",
     "BatchOptions",
+    "DeliveryFailure",
+    "FlushResult",
     "ResolvedConfig",
     "ApiKeyCredentials",
     "Transport",

@@ -66,16 +66,17 @@ class TestFailures:
         server.expect(Reply(delay_s=0.5))
         c = client(timeout=0.05)
         with pytest.raises(IntemptApiError, match="timed out"):
-            c.track("slow", user_id="u1")
+            c.recommend(user_id="u1", feed_id="f", fields=["id"])
 
-    def test_a_timeout_is_retryable(self, client, server):
+    def test_a_timeout_is_not_retryable(self, client, server):
+        """INT-7436: the request was written, so a resend risks a duplicate."""
         server.expect(Reply(delay_s=0.5))
         c = client(timeout=0.05)
-        try:
-            c.track("slow", user_id="u1")
-        except IntemptApiError as exc:
-            assert exc.status is None
-            assert exc.retryable is True
+        with pytest.raises(IntemptApiError) as caught:
+            c.recommend(user_id="u1", feed_id="f", fields=["id"])
+        assert caught.value.status is None
+        assert caught.value.timed_out is True
+        assert caught.value.retryable is False
 
     def test_a_200_with_a_non_json_body_does_not_crash(self, client, server):
         server.expect(Reply(body="<html>gateway</html>"))
@@ -88,13 +89,13 @@ class TestFailures:
     def test_carries_retry_after_onto_the_error(self, client, server):
         server.expect(Reply(status=429, headers={"Retry-After": "2"}))
         with pytest.raises(IntemptApiError) as caught:
-            client().track("purchase", user_id="u1")
+            client().recommend(user_id="u1", feed_id="f", fields=["id"])
         assert caught.value.retry_after_ms == 2000
 
     def test_leaves_retry_after_unset_when_absent(self, client, server):
         server.expect(Reply(status=500, body="boom"))
         with pytest.raises(IntemptApiError) as caught:
-            client().track("purchase", user_id="u1")
+            client().recommend(user_id="u1", feed_id="f", fields=["id"])
         assert caught.value.retry_after_ms is None
 
     def test_a_dead_pooled_connection_is_replaced(self, client, server):
@@ -152,8 +153,8 @@ class TestConcurrency:
     def test_a_failure_in_one_chunk_surfaces(self, client, server):
         server.expect(Reply(), Reply(status=500, body="boom"), Reply())
         c = client(max_request_events=1, max_concurrent_requests=3)
-        with pytest.raises(IntemptApiError):
-            c.track_batch([{"event": f"e{i}", "user_id": "u1"} for i in range(3)])
+        assert c.track_batch([{"event": f"e{i}", "user_id": "u1"} for i in range(3)]) is False
+        assert len(server.requests) == 3
 
     def test_one_client_is_safe_across_threads(self, client, server):
         server.expect(*[Reply() for _ in range(20)])

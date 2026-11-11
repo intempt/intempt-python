@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Changed — breaking
+
+- **Each request is sent once** (INT-7436). 503 and 429 get one resend after
+  `Retry-After` clamped to 1–60 s (1 s when absent); a wait over 5 s drops the batch
+  instead of sleeping. Every other answered status, 413 included, and a timeout after
+  the request was written are dropped and reported. A batch that never reached the
+  server stays queued for the next flush. The exponential backoff, the circuit breaker
+  and the 413 halving are gone. `IntemptApiError.retryable` is now true for 429 and 503
+  only; new `reached` and `timed_out` attributes say how a transport failure happened.
+- **Writes no longer raise for a delivery problem** (INT-7444). `track`, `track_batch`,
+  `identify`, `group`, `consent.grant/revoke` and the `ecommerce` methods return `bool`
+  (queued in batch mode, delivered in direct mode). A new `on_delivery_failure` option
+  receives a `DeliveryFailure` once per batch on its final outcome. `flush()` and
+  `close()` return `FlushResult(sent, failed)`. Code that caught `IntemptApiError`
+  around a write must read the return value or the listener instead. Bad arguments and
+  a closed client still raise; `recommend()` still raises.
+
 ## 2.1.0 — unreleased
 
 ### Changed

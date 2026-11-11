@@ -121,16 +121,16 @@ class TestBareSample:
 
         assert result.returncode == 1
         assert "status=500" in result.stderr
-        assert "retryable=True" in result.stderr
+        assert "kind=terminal" in result.stderr
 
-    def test_a_401_is_reported_as_not_retryable(self, server):
+    def test_a_401_is_reported_as_terminal(self, server):
         server.expect(*[Reply(status=401, body="{}") for _ in range(20)])
 
         result = run(server)
 
         assert result.returncode == 1
         assert "status=401" in result.stderr
-        assert "retryable=False" in result.stderr
+        assert "terminal=True" in result.stderr
 
     def test_recommend_is_skipped_without_a_feed_id(self, server):
         server.expect(*[Reply(status=200, body="{}") for _ in range(20)])

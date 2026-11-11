@@ -1,12 +1,12 @@
-"""Batching and the retry policy.
+"""Batching and the send policy.
 
 Every assertion here pins a decision that a rewrite could silently change: which
-statuses retry, how many attempts the breaker allows, whether backoff grows,
-whether a reduced width recovers.
+statuses are resent, how often, and which batches are kept (INT-7436).
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 
@@ -95,274 +95,6 @@ class TestBuffering:
         assert server.requests == []
 
 
-class TestRetryPolicy:
-    def test_413_halves_the_width_then_succeeds(self, batched, server, logger):
-        server.expect(Reply(status=413), Reply(), Reply())
-        c = batched(batch=BatchOptions(size=4, flush_ms=60_000, max_queue=50, flush_on_exit=False))
-        for i in range(4):
-            c.track(f"e{i}", user_id="u1")
-        c.flush()
-
-        widths = [len(r.body["track"]) for r in server.requests]
-        assert widths[0] == 4
-        assert max(widths[1:]) == 2
-        assert c.buffered == 0
-        assert logger.has("warning", "reducing batch size to 2")
-
-    def test_413_on_a_single_event_drops_it(self, batched, server, logger):
-        server.expect(*[Reply(status=413) for _ in range(6)])
-        c = batched(batch=BatchOptions(size=2, flush_ms=60_000, max_queue=10, flush_on_exit=False))
-        c.track("a", user_id="u1")
-        c.track("b", user_id="u1")
-        c.flush()
-
-        assert c.buffered == 0
-        assert logger.has("error", "single event too large")
-
-    def test_429_honours_retry_after(self, logger):
-        slept = RecordedSleep()
-        attempts = {"n": 0}
-
-        def send(_events):
-            attempts["n"] += 1
-            if attempts["n"] == 1:
-                raise IntemptApiError("slow down", status=429, body="", retry_after_ms=1000)
-
-        buffer = Buffer(
-            options=BatchOptions(size=1, flush_ms=10, max_queue=10, flush_on_exit=False),
-            max_request_events=50,
-            logger=logger,
-            send=send,
-            sleep=slept,
-        )
-        buffer.enqueue(event("a"))
-        buffer.flush()
-
-        # The server asked for 1s and got 1s — asserted from the requested wait
-        # rather than from elapsed wall clock, which is both stronger and free.
-        assert slept.ms == [1000]
-        assert logger.has("warning", "retrying in 1000ms")
-        assert buffer.size == 0
-
-    def test_a_negative_retry_after_never_becomes_a_negative_wait(self, batched, server, logger):
-        server.expect(Reply(status=429, headers={"Retry-After": "-5"}), Reply())
-        c = batched(batch=BatchOptions(size=1, flush_ms=10, max_queue=10, flush_on_exit=False))
-        c.track("a", user_id="u1")
-        c.flush()
-
-        waits = [
-            int(line.split("retrying in ")[1].rstrip("ms"))
-            for line in logger.calls["warning"]
-            if "retrying in" in line
-        ]
-        assert waits and all(w >= 100 for w in waits)
-
-    def test_a_non_retryable_status_drops_the_batch(self, batched, server, logger):
-        server.expect(Reply(status=400, body='{"errors":[]}'))
-        c = batched(batch=BatchOptions(size=1, flush_ms=60_000, max_queue=10, flush_on_exit=False))
-        c.track("a", user_id="u1")
-        c.flush()
-
-        assert c.buffered == 0
-        assert logger.has("error", "non-retryable error; dropping batch")
-
-    def test_breaker_opens_after_exactly_five_attempts(self, logger):
-        """Five, not four and not six."""
-        attempts = {"n": 0}
-
-        def send(_events):
-            attempts["n"] += 1
-            raise IntemptApiError("boom", status=500, body="")
-
-        buffer = Buffer(
-            options=BatchOptions(size=1, flush_ms=1, max_queue=10, flush_on_exit=False),
-            max_request_events=50,
-            logger=logger,
-            send=send,
-        )
-        buffer.enqueue(event("a"))
-        buffer.flush()
-
-        assert attempts["n"] == 5
-        assert logger.has("error", "5 consecutive failures; stopping batching")
-
-    def test_the_stop_message_says_how_many_are_stranded(self, logger):
-        buffer = Buffer(
-            options=BatchOptions(size=1, flush_ms=1, max_queue=10, flush_on_exit=False),
-            max_request_events=50,
-            logger=logger,
-            send=failing(500),
-        )
-        buffer.enqueue(event("a"))
-        buffer.enqueue(event("b"))
-        buffer.flush()
-
-        stop = [line for line in logger.calls["error"] if "stopping batching" in line]
-        assert stop and "event(s) remain buffered" in stop[0]
-
-    def test_backoff_doubles_rather_than_shrinking(self, logger):
-        slept = RecordedSleep()
-        buffer = Buffer(
-            options=BatchOptions(size=1, flush_ms=60, max_queue=10, flush_on_exit=False),
-            max_request_events=50,
-            logger=logger,
-            send=failing(500),
-            sleep=slept,
-        )
-        buffer.enqueue(event("a"))
-        buffer.flush()
-
-        # The decision, not the elapsed time.
-        assert slept.ms[:3] == [120, 240, 480]
-        waits = [
-            int(line.split("retrying in ")[1].rstrip("ms"))
-            for line in logger.calls["warning"]
-            if "retrying in" in line
-        ]
-        assert waits[:3] == [120, 240, 480]
-
-    def test_a_dropped_batch_does_not_count_toward_the_breaker(self, logger):
-        """One 400 after four 500s must not stop batching on the next blip."""
-        calls = {"n": 0}
-
-        def send(_events):
-            calls["n"] += 1
-            raise IntemptApiError("bad", status=400, body="")
-
-        buffer = Buffer(
-            options=BatchOptions(size=1, flush_ms=1, max_queue=20, flush_on_exit=False),
-            max_request_events=50,
-            logger=logger,
-            send=send,
-        )
-        for i in range(8):
-            buffer.enqueue(event(f"e{i}"))
-        buffer.flush()
-
-        assert buffer.size == 0
-        assert not logger.has("error", "stopping batching")
-
-
-class TestWidthRecovery:
-    def test_a_reduced_width_widens_again_after_a_run_of_successes(self, logger):
-        widths: list[int] = []
-        reject_wide = {"on": True}
-
-        def send(events):
-            widths.append(len(events))
-            if reject_wide["on"] and len(events) > 2:
-                raise IntemptApiError("too large", status=413, body="")
-
-        buffer = Buffer(
-            options=BatchOptions(size=4, flush_ms=60_000, max_queue=500, flush_on_exit=False),
-            max_request_events=50,
-            logger=logger,
-            send=send,
-        )
-        for i in range(4):
-            buffer.enqueue(event(f"a{i}"))
-        buffer.flush()
-        assert widths[0] == 4
-
-        # Healthy again. Ten full-width sends at the reduced width earn a widening.
-        reject_wide["on"] = False
-        before = len(widths)
-        for i in range(48):
-            buffer.enqueue(event(f"b{i}"))
-        buffer.flush()
-
-        assert max(widths[before:]) == 4, "the width must recover, not stay halved forever"
-
-    def test_widening_ignores_sends_narrower_than_the_current_width(self, logger):
-        """Ten width-1 flushes must not earn a widening away from width 2."""
-        widths: list[int] = []
-        reject_wide = {"on": True}
-
-        def send(events):
-            widths.append(len(events))
-            if reject_wide["on"] and len(events) > 2:
-                raise IntemptApiError("too large", status=413, body="")
-
-        buffer = Buffer(
-            options=BatchOptions(size=4, flush_ms=60_000, max_queue=500, flush_on_exit=False),
-            max_request_events=50,
-            logger=logger,
-            send=send,
-        )
-        for i in range(4):
-            buffer.enqueue(event(f"a{i}"))
-        buffer.flush()
-        reject_wide["on"] = False
-
-        before = len(widths)
-        for i in range(20):
-            buffer.enqueue(event(f"b{i}"))
-            buffer.flush()
-
-        assert set(widths[before:]) == {1}
-
-
-class TestDropDiagnostics:
-    def test_a_gateway_rejecting_everything_keeps_draining(self, logger):
-        """It must not stop: stopping strands the queue and every later event."""
-        buffer = Buffer(
-            options=BatchOptions(size=8, flush_ms=60_000, max_queue=100, flush_on_exit=False),
-            max_request_events=50,
-            logger=logger,
-            send=failing(413),
-        )
-        for i in range(10):
-            buffer.enqueue(event(f"e{i}"))
-        buffer.flush()
-
-        assert buffer.size == 0
-        assert not logger.has("error", "stopping batching")
-
-    def test_says_once_that_the_gateway_limit_is_a_likely_cause(self, logger):
-        buffer = Buffer(
-            options=BatchOptions(size=4, flush_ms=60_000, max_queue=100, flush_on_exit=False),
-            max_request_events=50,
-            logger=logger,
-            send=failing(413),
-        )
-        for i in range(8):
-            buffer.enqueue(event(f"e{i}"))
-        buffer.flush()
-
-        notices = [
-            line
-            for line in logger.calls["error"]
-            if "rejected as too large with none accepted in between" in line
-        ]
-        assert len(notices) == 1
-
-    def test_a_burst_of_oversized_events_does_not_punish_the_good_ones(self, logger):
-        """The regression a drop-breaker caused on Node: everything stranded."""
-        big = {"big0", "big1", "big2", "big3", "big4", "big5"}
-        sent: list[str] = []
-
-        def send(events):
-            names = [e["name"] for e in events]
-            if any(n in big for n in names):
-                raise IntemptApiError("too large", status=413, body="")
-            sent.extend(names)
-
-        buffer = Buffer(
-            options=BatchOptions(size=8, flush_ms=60_000, max_queue=200, flush_on_exit=False),
-            max_request_events=50,
-            logger=logger,
-            send=send,
-        )
-        for name in sorted(big):
-            buffer.enqueue(event(name))
-        for i in range(20):
-            buffer.enqueue(event(f"good{i}"))
-        buffer.flush()
-
-        assert len([n for n in sent if n.startswith("good")]) == 20
-        assert buffer.size == 0
-
-
 class TestCloseBudget:
     def test_close_returns_inside_its_budget(self, logger):
         buffer = Buffer(
@@ -383,7 +115,7 @@ class TestCloseBudget:
             options=BatchOptions(size=10, flush_ms=60_000, max_queue=100, flush_on_exit=False),
             max_request_events=50,
             logger=logger,
-            send=failing(500),
+            send=scripted(IntemptApiError("refused", reached=False)),
             close_budget_s=0.12,
         )
         for i in range(4):
@@ -440,24 +172,19 @@ class TestCloseBudget:
 
     def test_flush_is_not_bounded(self, logger):
         """Only close() gives up. A caller mid-request has not asked to."""
-        attempts = {"n": 0}
-
-        def send(_events):
-            attempts["n"] += 1
-            if attempts["n"] < 3:
-                raise IntemptApiError("boom", status=500, body="")
-
+        send = scripted(api(503))
         buffer = Buffer(
             options=BatchOptions(size=10, flush_ms=1, max_queue=100, flush_on_exit=False),
             max_request_events=50,
             logger=logger,
             send=send,
             close_budget_s=0.001,
+            sleep=RecordedSleep(),
         )
         buffer.enqueue(event("a"))
         buffer.flush()
 
-        assert attempts["n"] == 3
+        assert send.calls == [["a"], ["a"]]
         assert buffer.size == 0
 
 
@@ -537,12 +264,190 @@ class TestStdlibLoggerExtra:
         full = [r for r in caplog.records if "queue full" in r.getMessage()]
         assert [(r.event_name, r.max_queue) for r in full] == [("over", 2)]
 
-    def test_a_single_event_413_is_dropped_and_logged(self, stdlib_logger, caplog):
+    def test_a_413_is_dropped_and_logged(self, stdlib_logger, caplog):
         buffer = self._buffer(stdlib_logger, send=failing(413))
 
         buffer.enqueue(event("huge"))
         buffer.flush()
 
         assert buffer.size == 0
-        dropped = [r for r in caplog.records if "single event too large" in r.getMessage()]
-        assert [r.event_name for r in dropped] == ["huge"]
+        dropped = [r for r in caplog.records if "batch dropped" in r.getMessage()]
+        assert [(r.status, r.count) for r in dropped] == [(413, 1)]
+
+
+def _buffer(send, *, size=10, sleep=None, logger=None, close_budget_s=30.0):
+    return Buffer(
+        options=BatchOptions(size=size, flush_ms=60_000, max_queue=100, flush_on_exit=False),
+        max_request_events=50,
+        logger=logger or _NullLogger(),
+        send=send,
+        sleep=sleep or RecordedSleep(),
+        close_budget_s=close_budget_s,
+    )
+
+
+class _NullLogger:
+    def __getattr__(self, _name):
+        return lambda *a, **k: None
+
+
+class scripted:
+    """A send that raises (or returns) per call, recording the batch it was handed."""
+
+    def __init__(self, *outcomes):
+        self.outcomes = outcomes
+        self.calls: list[list[str]] = []
+
+    def __call__(self, events):
+        self.calls.append([e["name"] for e in events])
+        if len(self.calls) <= len(self.outcomes):
+            outcome = self.outcomes[len(self.calls) - 1]
+            if isinstance(outcome, Exception):
+                raise outcome
+
+
+def api(status, retry_after_ms=None):
+    return IntemptApiError(
+        f"Intempt API responded {status}", status=status, body="", retry_after_ms=retry_after_ms
+    )
+
+
+class TestSendOnce:
+    """INT-7436 (CONTRACT-R2 S1): send once; 503 and 429 get one resend; never-reached is kept."""
+
+    @pytest.mark.parametrize("status", [400, 401, 404, 408, 413, 500, 502, 504])
+    def test_an_answered_failure_is_sent_once_and_dropped(self, status):
+        send = scripted(api(status))
+        buffer = _buffer(send)
+        for name in ("a", "b", "c", "d"):
+            buffer.enqueue(event(name))
+        buffer.flush()
+
+        assert send.calls == [["a", "b", "c", "d"]]
+        assert buffer.size == 0
+
+    def test_the_next_event_after_a_drop_is_delivered_alone(self):
+        send = scripted(api(500))
+        buffer = _buffer(send)
+        buffer.enqueue(event("a"))
+        buffer.flush()
+        buffer.enqueue(event("b"))
+        buffer.flush()
+
+        assert send.calls == [["a"], ["b"]]
+
+    def test_a_timeout_after_the_write_is_not_resent(self):
+        send = scripted(IntemptApiError("request timed out after 10.0s"))
+        buffer = _buffer(send)
+        buffer.enqueue(event("a"))
+        buffer.flush()
+
+        assert send.calls == [["a"]]
+        assert buffer.size == 0
+
+    @pytest.mark.parametrize("status", [503, 429])
+    def test_503_and_429_get_exactly_one_resend(self, status):
+        slept = RecordedSleep()
+        send = scripted(api(status), api(status), None)
+        buffer = _buffer(send, sleep=slept)
+        buffer.enqueue(event("a"))
+        buffer.flush()
+
+        assert send.calls == [["a"], ["a"]]
+        assert buffer.size == 0
+        assert slept.waits == [1.0]
+
+    def test_the_resend_waits_retry_after(self):
+        slept = RecordedSleep()
+        send = scripted(api(429, retry_after_ms=3000), None)
+        buffer = _buffer(send, sleep=slept)
+        buffer.enqueue(event("a"))
+        buffer.flush()
+
+        assert send.calls == [["a"], ["a"]]
+        assert slept.waits == [3.0]
+
+    @pytest.mark.parametrize(
+        ("advised_ms", "wait_s"), [(None, 1.0), (0, 1.0), (400, 1.0), (5000, 5.0)]
+    )
+    def test_the_wait_is_clamped_to_at_least_one_second(self, advised_ms, wait_s):
+        slept = RecordedSleep()
+        buffer = _buffer(scripted(api(503, retry_after_ms=advised_ms), None), sleep=slept)
+        buffer.enqueue(event("a"))
+        buffer.flush()
+
+        assert slept.waits == [wait_s]
+
+    def test_a_wait_past_the_five_second_cap_drops_without_sleeping(self):
+        slept = RecordedSleep()
+        send = scripted(api(503, retry_after_ms=5001), None)
+        buffer = _buffer(send, sleep=slept)
+        buffer.enqueue(event("a"))
+        buffer.flush()
+
+        assert send.calls == [["a"]]
+        assert slept.waits == []
+        assert buffer.size == 0
+
+    def test_a_batch_that_never_reached_the_server_is_kept_for_the_next_flush(self):
+        send = scripted(IntemptApiError("Connection refused", reached=False), None)
+        buffer = _buffer(send)
+        buffer.enqueue(event("a"))
+        buffer.enqueue(event("b"))
+        buffer.flush()
+
+        assert send.calls == [["a", "b"]]
+        assert buffer.size == 2
+
+        buffer.flush()
+        assert send.calls == [["a", "b"], ["a", "b"]]
+        assert buffer.size == 0
+
+    def test_failures_never_stop_the_buffer(self):
+        send = scripted(*[api(500) for _ in range(8)])
+        buffer = _buffer(send, size=1)
+        for i in range(8):
+            buffer.enqueue(event(f"e{i}"))
+        buffer.enqueue(event("after"))
+
+        assert send.calls[-1] == ["after"]
+        assert len(send.calls) == 9
+
+
+class TestTransportReach:
+    """INT-7436: the transport says whether the request reached the server."""
+
+    def test_a_refused_connection_never_reached_the_server(self, client):
+        c = client(host="127.0.0.1:1")
+        with pytest.raises(IntemptApiError) as caught:
+            c._transport.post("/x", {})
+        assert caught.value.reached is False
+
+    def test_a_timeout_after_the_write_reached_the_server(self, client, server):
+        server.expect(Reply(delay_s=0.5))
+        c = client(timeout=0.05)
+        with pytest.raises(IntemptApiError) as caught:
+            c._transport.post("/x", {})
+        assert caught.value.reached is True
+        assert caught.value.timed_out is True
+
+    def test_retryable_names_only_the_statuses_resent_once(self):
+        assert [s for s in (400, 408, 413, 429, 500, 503, 504) if api(s).retryable] == [429, 503]
+
+
+class TestDirectModeSendOnce:
+    def test_direct_mode_resends_a_503_once(self, client, server):
+        server.expect(Reply(status=503), Reply())
+        c = client()
+        c._sleep = RecordedSleep()
+        c.track("a", user_id="u1")
+
+        assert len(server.requests) == 2
+
+    def test_direct_mode_sends_a_500_once(self, client, server):
+        server.expect(Reply(status=500), Reply())
+        c = client()
+        with contextlib.suppress(IntemptApiError):
+            c.track("a", user_id="u1")
+
+        assert len(server.requests) == 1

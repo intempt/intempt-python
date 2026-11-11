@@ -45,21 +45,27 @@ other short-lived processes.
 | call | returns | endpoint |
 | ---- | ------- | -------- |
 | `Intempt(**config)` | client | — |
-| `track(event, **options)` | `None` | `POST …/track` |
-| `track_batch(events)` | `None` | `POST …/track`, chunked |
-| `identify(**options)` | `None` | `POST …/track` (reserved `Identify`) |
-| `group(account_id=…, **options)` | `None` | `POST …/track` (reserved `Identify`) |
-| `consent.grant(**options)` | `None` | `POST …/consents/data` |
-| `consent.revoke(**options)` | `None` | `POST …/consents/data` |
-| `ecommerce.product_viewed(product_id=…, **ids)` | `None` | `POST …/track` |
-| `ecommerce.added_to_cart(product_id=…, quantity=…, **ids)` | `None` | `POST …/track` |
-| `ecommerce.ordered(products=[…], **ids)` | `None` | `POST …/track` |
+| `track(event, **options)` | `bool` | `POST …/track` |
+| `track_batch(events)` | `bool` | `POST …/track`, chunked |
+| `identify(**options)` | `bool` | `POST …/track` (reserved `Identify`) |
+| `group(account_id=…, **options)` | `bool` | `POST …/track` (reserved `Identify`) |
+| `consent.grant(**options)` | `bool` | `POST …/consents/data` |
+| `consent.revoke(**options)` | `bool` | `POST …/consents/data` |
+| `ecommerce.product_viewed(product_id=…, **ids)` | `bool` | `POST …/track` |
+| `ecommerce.added_to_cart(product_id=…, quantity=…, **ids)` | `bool` | `POST …/track` |
+| `ecommerce.ordered(products=[…], **ids)` | `bool` | `POST …/track` |
 | `recommend(feed_id=…, fields=[…], **ids)` | `dict` | `POST …/feeds/{id}/data` |
 | `opt_in()` / `opt_out()` / `is_opted_in()` | — | — |
-| `flush()` / `close()` | `None` | — |
+| `flush()` / `close()` | `FlushResult(sent, failed)` | — |
 | `set_config(**patch)` / `config` / `buffered` | — | — |
 
-Every method raises on failure. Nothing is swallowed.
+Writes (`track`, `track_batch`, `identify`, `group`, `consent.*`, `ecommerce.*`) return `bool`
+— queued in batch mode, delivered in direct mode — and never raise for a delivery problem.
+A failed send is reported once per batch to the `on_delivery_failure` callable you pass to
+`Intempt(...)`, as a `DeliveryFailure(kind, event_count, event_ids, terminal, status,
+retry_after)`. A bad argument or a closed client still raises `IntemptConfigError`, and
+`recommend()` still raises `IntemptApiError`. The return values in the table above that say
+`None` are `bool` for these write methods.
 
 ## Identifiers
 
@@ -99,37 +105,32 @@ intempt.flush()  # send now
 intempt.close()  # drain and release
 ```
 
-`flush()` and `close()` are safe to call when batching is off; they do nothing.
+`flush()` and `close()` are safe to call when batching is off; they return
+`FlushResult(sent=0, failed=0)`. `close()` is this SDK's shutdown.
 
-`close()` drains for at most 30 seconds, then stops retrying and logs how many events
-it gave up on. Without a ceiling a shutdown hook can block for minutes against a
+`close()` drains for at most 30 seconds, then drops what is left, counts it as
+`failed`, reports it as `dropped` and logs how many events it gave up on. Without a ceiling a shutdown hook can block for minutes against a
 failing endpoint. `flush()` is **not** bounded: a caller who is not shutting down has
 not asked to give up.
 
-### Retry policy
+### Send policy (INT-7436)
+
+Each request is sent once, in batch and direct mode alike.
 
 | response | behaviour |
 | -------- | --------- |
-| 413, batch > 1 | halve the batch size, retry |
-| 413, batch = 1 | drop the event, log it, return the width to full |
-| 429 | honour `Retry-After`, else exponential backoff |
-| 5xx, 408, timeout | exponential backoff, floored at 100ms, capped at 10 min |
-| other 4xx | drop the batch, log the status and body |
-| 5 consecutive failures | stop batching and say how many events are stranded |
-| 3 consecutive 413 drops | say the gateway body limit is the likely cause, once |
-
-A 413 halves the width, and the width only widens again after ten consecutive
-successful sends that filled it, doubling each time. One transient 413 costs
-throughput for a while rather than forever.
+| 2xx | sent |
+| 503, 429 | resend once after `Retry-After` clamped to 1–60 s (1 s when absent); a wait over 5 s drops instead of sleeping |
+| any other status (400, 401–404, 408, 413, 500, 502, 504, …) | drop and report |
+| timeout or broken connection after the request was written | drop and report; the server may already have it |
+| never reached the server (DNS, refused, connect timeout) | batch mode keeps the batch for the next flush; direct mode drops and reports |
 
 The buffer is in memory. A hard crash loses it.
 
-**Delivery is at-least-once, not exactly-once.** A retry after a lost response
-re-sends events the server may already have stored, and ingestion has no idempotency
-key — `eventId` travels in the payload but is not a column in the events table, and
-the table is a plain `MergeTree`, so nothing collapses duplicates. Set `batch=None` if
-you would rather a failure surface to your code than be retried, and de-duplicate
-downstream if exact counts matter.
+**Ingestion has no idempotency key** — `eventId` travels in the payload but is not a
+column in the events table, and the table is a plain `MergeTree`, so nothing collapses
+duplicates. That is why a request that may have landed (a timeout after the write) is
+never resent: the SDK trades a possible loss, which it reports, for no duplicates.
 
 ## Timestamps
 

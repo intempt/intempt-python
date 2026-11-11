@@ -58,32 +58,28 @@ path is `…/track` rather than `…/sources/{id}/track`.
 
 ## Delivery guarantees
 
-### Errors surface. Nothing is swallowed
+### Failed sends are reported, not raised (INT-7444)
 
-Every method raises/rejects on failure. No callback-swallow, no silent discard. This
-is the single biggest departure from mixpanel-node.
+A write never raises for a delivery problem, in batch or direct mode: it returns
+whether the event was accepted, and the `on_delivery_failure` listener hears each
+batch's final outcome once. `flush()`/`close()` return `FlushResult(sent, failed)`.
+Bad arguments and a closed client still raise. Ruling: CONTRACT-R2 S2, the same in
+every Intempt SDK.
 
-### Retry policy
+### Send policy (INT-7436)
+
+One table in `_delivery.py` for batch mode, direct mode and consent:
 
 | response | behaviour |
 | -------- | --------- |
-| 413, batch > 1 | halve the batch width, retry |
-| 413, batch = 1 | drop the event, log it, return the width to full |
-| 429 | honour `Retry-After`, else exponential backoff |
-| 5xx, 408, timeout | exponential backoff, floored at 100ms, capped at 10 min |
-| other 4xx | drop the batch, log status and body |
-| 5 consecutive failures | stop batching, report how many events are stranded |
-| 3 consecutive 413 drops | say the gateway body limit is the likely cause, once |
+| 2xx | sent |
+| 503, 429 | resend once after `Retry-After` clamped to 1–60 s (1 s when absent); a wait over 5 s drops instead of sleeping |
+| any other status (400, 401–404, 408, 413, 500, 502, 504, …) | drop and report |
+| timeout or broken connection after the request was written | drop and report; the server may already have it |
+| never reached the server (DNS, refused, connect timeout) | batch mode keeps the batch for the next flush; direct mode drops and reports |
 
-Two width rules that are easy to get wrong, and were:
-
-1. **A reduced width must recover.** Compare successes against the *current* width,
-   not the full width — `batch` is sliced to the current width, so a comparison
-   against full is unreachable and the reduction becomes permanent. Widen by doubling
-   after 10 consecutive successful sends that filled the width.
-2. **The drop tally must not change behaviour.** It is diagnostic only. Stopping on it
-   strands the queue; pinning the width to 1 on it caps throughput to one event per
-   round trip and loses more events than it saves requests.
+The earlier backoff, circuit breaker and 413 halving were removed by ruling
+(R-retry, CONTRACT-R2 S1): every one of them resent requests the server had answered.
 
 ### Timestamps
 
@@ -102,19 +98,18 @@ different source. Never coerce an id numerically, in any language, at any layer.
 
 Ingestion has no idempotency key. `event_id` travels in the payload but is not a
 column in the events table, and the table is a plain `MergeTree` — nothing collapses
-duplicates. A retry after a lost response therefore duplicates rows. Say so in the
-README rather than letting callers infer exactly-once from the retry table.
+duplicates. That is why nothing that may have landed is resent.
 
 ### close() is bounded
 
-`close()` drains for at most 30 seconds, then stops retrying and logs how many events
+`close()` drains for at most 30 seconds, then drops, reports and logs how many events
 it abandoned. Unbounded, a shutdown hook blocks for minutes against a failing
 endpoint. `flush()` is **not** bounded — a caller who is not shutting down has not
 asked to give up.
 
-Enforce the deadline in two places, because one leaks: before starting a backoff (the
-first wait alone can exceed the whole budget) and at the top of each drain iteration
-(sends that succeed but are slow never reach the backoff check).
+Enforce the deadline in two places, because one leaks: before starting the one resend
+wait and at the top of each drain iteration (sends that succeed but are slow never
+reach the wait check).
 
 ### opt-out gates buffered events too
 
