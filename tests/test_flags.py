@@ -11,6 +11,7 @@ import json
 import pytest
 
 from intempt import FlagContext, IntemptConfigError
+from intempt._flags import UNANSWERED
 from tests.conftest import ORG, PROJECT, SOURCE, Reply
 
 CTX = FlagContext(user_id="u-1", profile_id="p-1")
@@ -192,6 +193,18 @@ class TestVariation:
         c = client()
 
         assert c.variation("checkout_v2", CTX, False) is True
+
+    def test_a_wire_reason_is_ignored(self, client, server):
+        # INT-7457: ExperienceApiChoose carries only name/group/body, so a "reason" key can only
+        # come from a fixture. Reading it made an unreachable branch look live; the reason is
+        # fixed, as in intempt-php.
+        server.expect(_choices({"name": "checkout_v2", "body": True, "reason": "targeted"}))
+        c = client()
+
+        detail = c._variation_detail("checkout_v2", CTX, False)
+
+        assert detail.value is True
+        assert detail.reason == UNANSWERED
 
     def test_returns_the_default_when_the_served_body_is_null(self, client, server):
         # NOT the holdout case, which cannot be asserted: a held-back person's experience is

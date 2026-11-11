@@ -309,7 +309,9 @@ class Intempt:
                 body = choice.get("body")
                 return FlagDetail(
                     value=default_value if body is None else body,
-                    reason=choice.get("reason") or UNANSWERED,
+                    # Not read off the wire (INT-7457): ExperienceApiChoose carries only
+                    # name/group/body, so a "reason" key could only come from a fixture.
+                    reason=UNANSWERED,
                 )
         return FlagDetail(value=default_value, reason=UNANSWERED)
 
