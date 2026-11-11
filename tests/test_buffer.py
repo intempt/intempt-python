@@ -7,7 +7,10 @@ whether a reduced width recovers.
 
 from __future__ import annotations
 
+import logging
 import time
+
+import pytest
 
 from intempt import BatchOptions, IntemptApiError
 from intempt._buffer import Buffer
@@ -483,3 +486,63 @@ class TestOptOutGate:
 
         names = [e["name"] for r in server.requests for e in r.body["track"]]
         assert names == ["after"]
+
+
+class TestStdlibLoggerExtra:
+    """INT-7440. ``RecordingLogger`` accepts any ``extra``; a real ``logging.Logger`` refuses a
+    key that collides with a LogRecord attribute (``name``) with a KeyError, which escaped
+    ``track()``. These cases therefore need the stdlib logger, not the fixture."""
+
+    @staticmethod
+    def _buffer(stdlib_logger, *, size=10, max_queue=100, send=None):
+        return Buffer(
+            options=BatchOptions(
+                size=size, flush_ms=60_000, max_queue=max_queue, flush_on_exit=False
+            ),
+            max_request_events=50,
+            logger=stdlib_logger,
+            send=send or (lambda _events: None),
+            sleep=RecordedSleep(),
+        )
+
+    @pytest.fixture
+    def stdlib_logger(self, caplog):
+        caplog.set_level(logging.ERROR, logger="intempt.int7440")
+        return logging.getLogger("intempt.int7440")
+
+    def test_enqueue_on_a_stopped_buffer_logs_instead_of_raising(self, stdlib_logger, caplog):
+        buffer = self._buffer(stdlib_logger)
+        buffer.close()
+
+        buffer.enqueue(event("late"))
+
+        assert [r.event_name for r in caplog.records] == ["late"]
+
+    def test_enqueue_on_a_full_queue_logs_instead_of_raising(self, stdlib_logger, caplog):
+        # Another thread tracking while a full batch is in flight: the batch stays queued until
+        # the send returns, so the arrival finds the queue at max_queue.
+        late: list[str] = []
+
+        def send(_events):
+            if not late:
+                late.append("over")
+                buffer.enqueue(event("over"))
+
+        buffer = self._buffer(stdlib_logger, size=2, max_queue=2, send=send)
+
+        buffer.enqueue(event("a"))
+        buffer.enqueue(event("b"))
+
+        assert buffer.size == 0
+        full = [r for r in caplog.records if "queue full" in r.getMessage()]
+        assert [(r.event_name, r.max_queue) for r in full] == [("over", 2)]
+
+    def test_a_single_event_413_is_dropped_and_logged(self, stdlib_logger, caplog):
+        buffer = self._buffer(stdlib_logger, send=failing(413))
+
+        buffer.enqueue(event("huge"))
+        buffer.flush()
+
+        assert buffer.size == 0
+        dropped = [r for r in caplog.records if "single event too large" in r.getMessage()]
+        assert [r.event_name for r in dropped] == ["huge"]

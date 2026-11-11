@@ -109,13 +109,13 @@ class Buffer:
             if self._stopped:
                 self._logger.error(
                     "[intempt] batching is stopped; event dropped",
-                    extra={"name": event.get("name")},
+                    extra={"event_name": event.get("name")},
                 )
                 return
             if len(self._queue) >= self._options.max_queue:
                 self._logger.error(
                     "[intempt] batch queue full; event dropped",
-                    extra={"name": event.get("name"), "max_queue": self._options.max_queue},
+                    extra={"event_name": event.get("name"), "max_queue": self._options.max_queue},
                 )
                 return
             self._queue.append(event)
@@ -240,7 +240,7 @@ class Buffer:
 
         self._logger.error(
             "[intempt] single event too large; dropping",
-            extra={"name": batch[0].get("name") if batch else None},
+            extra={"event_name": batch[0].get("name") if batch else None},
         )
         with self._lock:
             del self._queue[:1]

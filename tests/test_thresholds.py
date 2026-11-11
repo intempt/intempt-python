@@ -324,7 +324,7 @@ class TestQueueBound:
             ]
             assert extras, "the operator needs the cap that was hit"
             assert extras[-1]["max_queue"] == 1
-            assert extras[-1]["name"] == "dropped"
+            assert extras[-1]["event_name"] == "dropped"
         finally:
             release.set()
             producer.join(5)
