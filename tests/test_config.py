@@ -56,6 +56,36 @@ class TestSourceId:
     def test_absent_when_not_provided(self):
         assert resolve_config(**base()).source_id is None
 
+    # INT-7455: the backend parses source_id as a positive Java long; anything else failed every
+    # call silently instead of failing construction.
+    @pytest.mark.parametrize(
+        "source_id",
+        [
+            "abc",
+            "12a",
+            "0",
+            "01",
+            "-5",
+            " 1",
+            "1\n",
+            "1.5",
+            "\u0661\u0662",
+            "9223372036854775808",
+            "12345678901234567890",
+            -5,
+            True,
+        ],
+    )
+    def test_rejects_anything_but_a_positive_long(self, source_id):
+        with pytest.raises(
+            IntemptConfigError, match='"source_id" must be a positive 64-bit integer'
+        ):
+            resolve_config(**base(source_id=source_id))
+
+    @pytest.mark.parametrize("source_id", ["1", "1841503112918048768", "9223372036854775807"])
+    def test_accepts_a_positive_long_and_keeps_every_digit(self, source_id):
+        assert resolve_config(**base(source_id=source_id)).source_id == source_id
+
 
 class TestHostAndPort:
     def test_splits_host_and_port(self):

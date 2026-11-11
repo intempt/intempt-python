@@ -7,6 +7,7 @@ Licensed under the Apache License, Version 2.0.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -96,6 +97,18 @@ def _split_host(host: str) -> tuple[str, int | None]:
     return hostname, port
 
 
+_LONG_MAX = "9223372036854775807"
+
+
+def _is_positive_long(value: str) -> bool:
+    # The backend parses source_id as a Java long and requires it > 0 (INT-7455). fullmatch, not
+    # match: "$" also matches before a trailing newline. [0-9], not \d: \d accepts non-ASCII
+    # digits. Equal-length digit strings order lexicographically exactly as numerically.
+    return re.fullmatch(r"[1-9][0-9]{0,18}", value) is not None and (
+        len(value) < len(_LONG_MAX) or value <= _LONG_MAX
+    )
+
+
 def resolve_config(**options: Any) -> ResolvedConfig:
     """Validate and normalise constructor options."""
     for name in ("org", "project", "api_key"):
@@ -110,6 +123,10 @@ def resolve_config(**options: Any) -> ResolvedConfig:
         source_id = str(source_id)
         if not source_id.strip():
             raise IntemptConfigError('Intempt: "source_id" must not be empty when provided')
+        if not _is_positive_long(source_id):
+            raise IntemptConfigError(
+                'Intempt: "source_id" must be a positive 64-bit integer, as a string of digits'
+            )
 
     # None means "not supplied, use the default". An explicit empty string is a
     # mistake and is refused rather than quietly becoming the default.
