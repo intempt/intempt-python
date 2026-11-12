@@ -152,7 +152,7 @@ like it just happened. The reverse mistake fails loudly.
 ## Opting out
 
 ```python
-intempt.opt_out()  # suppresses track, batch, commerce and consent
+intempt.opt_out()  # suppresses track, batch and commerce; consent is still sent
 intempt.opt_in()
 ```
 

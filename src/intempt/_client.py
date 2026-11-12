@@ -52,9 +52,9 @@ class Consent:
         if not _present(user_id) and not _present(profile_id):
             raise IntemptConfigError(f"{name}: user_id must be a non-empty string")
 
+        # Deliberately NOT gated on opt-out (ruling D-5, INT-7437): a withdrawal must reach the
+        # server precisely when the person has opted out. intempt-js consent() does the same.
         self._client._assert_open()
-        if not self._client.is_opted_in():
-            return
 
         config = self._client._config
         if profile_id and not config.source_id:
@@ -309,7 +309,9 @@ class Intempt:
                 body = choice.get("body")
                 return FlagDetail(
                     value=default_value if body is None else body,
-                    reason=choice.get("reason") or UNANSWERED,
+                    # Not read off the wire (INT-7457): ExperienceApiChoose carries only
+                    # name/group/body, so a "reason" key could only come from a fixture.
+                    reason=UNANSWERED,
                 )
         return FlagDetail(value=default_value, reason=UNANSWERED)
 
@@ -452,7 +454,9 @@ class Intempt:
         self._opted_in = True
 
     def opt_out(self) -> None:
-        """Suppress all outbound writes: track, batch, commerce and consent.
+        """Suppress all outbound tracking writes: track, batch and commerce.
+
+        Consent is still sent, so a withdrawal reaches the server (ruling D-5).
 
         ``recommend()`` is unaffected — it sends an identifier the caller already
         holds and returns a decision rather than storing anything.

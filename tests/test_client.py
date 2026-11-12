@@ -226,14 +226,23 @@ class TestRecommend:
 
 
 class TestPrivacy:
-    def test_opt_out_suppresses_every_write(self, client, server):
+    def test_opt_out_suppresses_every_tracking_write(self, client, server):
         c = client()
         c.opt_out()
         c.track("purchase", user_id="u1")
         c.identify(user_id="u1")
-        c.consent.grant(user_id="u1")
         c.ecommerce.ordered(user_id="u1", products=[{"product_id": "a"}])
         assert server.requests == []
+
+    def test_opt_out_still_sends_consent_grant_and_revoke(self, client, server):
+        # Ruling D-5 (INT-7437): consent is the person's own instruction, so a withdrawal must
+        # reach the server precisely when they have opted out. intempt-js does not gate it either.
+        c = client()
+        c.opt_out()
+        c.consent.grant(user_id="u1")
+        c.consent.revoke(user_id="u1")
+        assert [r.path for r in server.requests] == [CONSENT_PATH, CONSENT_PATH]
+        assert [r.body["action"] for r in server.requests] == ["accept", "reject"]
 
     def test_opt_in_restores_sending(self, client, server):
         c = client()
