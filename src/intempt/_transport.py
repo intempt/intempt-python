@@ -91,13 +91,14 @@ def parse_retry_after(value: str | None) -> int | None:
 
 
 class Transport:
-    """Owns the connection. One instance per client."""
+    """Owns the connection pool. One instance per client."""
 
     def __init__(self, config: ResolvedConfig, credentials: ApiKeyCredentials) -> None:
         self._config = config
         self._credentials = credentials
         self._lock = threading.Lock()
-        self._conn: http.client.HTTPConnection | None = None
+        self._idle: list[http.client.HTTPConnection] = []
+        self._semaphore = threading.BoundedSemaphore(max(1, config.max_concurrent_requests))
         self._closed = False
 
     def set_config(self, config: ResolvedConfig) -> None:
@@ -107,30 +108,35 @@ class Transport:
                 or config.port != self._config.port
                 or config.scheme != self._config.scheme
             )
+            resize = config.max_concurrent_requests != self._config.max_concurrent_requests
             self._config = config
             if reconnect:
-                self._drop_connection()
+                self._drop_idle()
+            if resize:
+                self._semaphore = threading.BoundedSemaphore(max(1, config.max_concurrent_requests))
 
-    def _drop_connection(self) -> None:
-        if self._conn is not None:
-            # Best effort: a socket the peer already dropped raises here, and
-            # there is nothing useful to do about it while tearing down.
-            with contextlib.suppress(Exception):  # pragma: no cover
-                self._conn.close()
-            self._conn = None
+    def _drop_idle(self) -> None:
+        for conn in self._idle:
+            _close_quietly(conn)
+        self._idle.clear()
 
-    def _connection(self) -> http.client.HTTPConnection:
-        if self._conn is not None and self._config.keep_alive:
-            return self._conn
+    def _checkout(self, config: ResolvedConfig) -> http.client.HTTPConnection:
+        with self._lock:
+            if self._closed:
+                raise IntemptApiError("client is closed")
+            if config.keep_alive and self._idle:
+                return self._idle.pop()
         cls = (
-            http.client.HTTPSConnection
-            if self._config.scheme == "https"
-            else http.client.HTTPConnection
+            http.client.HTTPSConnection if config.scheme == "https" else http.client.HTTPConnection
         )
-        conn = cls(self._config.host, self._config.port, timeout=self._config.timeout)
-        if self._config.keep_alive:
-            self._conn = conn
-        return conn
+        return cls(config.host, config.port, timeout=config.timeout)
+
+    def _checkin(self, conn: http.client.HTTPConnection) -> None:
+        with self._lock:
+            if self._closed:
+                _close_quietly(conn)
+                return
+            self._idle.append(conn)
 
     def post(self, path: str, body: Any) -> Any:
         """POST JSON, return the decoded body. Raises IntemptApiError on failure."""
@@ -146,30 +152,32 @@ class Transport:
         if self._config.debug:
             self._config.logger.debug("[intempt] POST %s", path)
 
-        with self._lock:
-            if self._closed:
-                raise IntemptApiError("client is closed")
+        with self._semaphore:
+            with self._lock:
+                config = self._config
+            conn = self._checkout(config)
             try:
-                conn = self._connection()
                 conn.request("POST", path, body=payload, headers=headers)
                 response = conn.getresponse()
                 raw = response.read().decode("utf-8", errors="replace")
                 status = response.status
                 retry_after = parse_retry_after(response.getheader("Retry-After"))
             except socket.timeout as exc:
-                self._drop_connection()
+                _close_quietly(conn)
                 raise IntemptApiError(
-                    f"request timed out after {self._config.timeout}s", cause=exc
+                    f"request timed out after {config.timeout}s", cause=exc
                 ) from exc
             except (http.client.HTTPException, OSError) as exc:
                 # A pooled connection the server already closed raises here on
                 # the next use. Drop it so the retry gets a fresh socket rather
                 # than failing again on the same dead one.
-                self._drop_connection()
+                _close_quietly(conn)
                 raise IntemptApiError(str(exc) or type(exc).__name__, cause=exc) from exc
 
-            if not self._config.keep_alive:
-                self._drop_connection()
+            if config.keep_alive:
+                self._checkin(conn)
+            else:
+                _close_quietly(conn)
 
         if status < 200 or status >= 300:
             raise IntemptApiError(
@@ -192,7 +200,14 @@ class Transport:
     def close(self) -> None:
         with self._lock:
             self._closed = True
-            self._drop_connection()
+            self._drop_idle()
+
+
+def _close_quietly(conn: http.client.HTTPConnection) -> None:
+    # Best effort: a socket the peer already dropped raises here, and there is
+    # nothing useful to do about it while tearing down.
+    with contextlib.suppress(Exception):
+        conn.close()
 
 
 def _json_default(value: Any) -> Any:
