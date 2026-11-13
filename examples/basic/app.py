@@ -117,9 +117,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._reply(201, {"ok": True})
 
             if route == "/forget":
-                # Revoking consent is a write like any other, and it is gated by
-                # opt-out the same way.
-                intempt.consent.revoke(user_id=user, reason="user requested deletion")
+                # A withdrawal is a privacy record: revoke() reports a failure as
+                # False rather than raising, so the page must not say it is done.
+                if not intempt.consent.revoke(user_id=user, reason="user requested deletion"):
+                    return self._reply(502, {"error": "consent withdrawal not recorded"})
                 return self._reply(202, {"ok": True})
 
             return self._reply(404, {"error": "no such route"})
