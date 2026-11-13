@@ -11,6 +11,8 @@
   server stays queued for the next flush. The exponential backoff, the circuit breaker
   and the 413 halving are gone. `IntemptApiError.retryable` is now true for 429 and 503
   only; new `reached` and `timed_out` attributes say how a transport failure happened.
+  A pooled keep-alive socket the server already closed is not a lost batch: the
+  transport reconnects once at once and sends on the fresh socket.
 - **Writes no longer raise for a delivery problem** (INT-7444). `track`, `track_batch`,
   `identify`, `group`, `consent.grant/revoke` and the `ecommerce` methods return `bool`
   (queued in batch mode, delivered in direct mode). A new `on_delivery_failure` option

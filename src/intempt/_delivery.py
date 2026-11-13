@@ -10,6 +10,7 @@ One table for batch mode, direct mode and consent, so the three cannot drift:
 * timeout after the write dropped: the server may already hold the events, so a resend risks
                           duplicates
 * never reached           kept by the buffer for its next flush; direct mode has no queue and drops
+* stale pooled socket     not an outcome here: the transport reconnects once before it reports (R5)
 
 Nothing here raises to the caller. The outcome goes to the ``on_delivery_failure`` listener once
 per batch. Rulings: brain plan2 CONTRACT-R2 S1/S2 and DECISIONS 7436/7444.

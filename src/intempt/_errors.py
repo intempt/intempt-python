@@ -24,7 +24,8 @@ class IntemptApiError(IntemptError):
     False only when the request never left (DNS, refused, connect timeout): that
     batch is safe to send again. Once the request was written the server may hold
     it, so a timeout or a broken connection after that point is not resent
-    (INT-7436).
+    (INT-7436). The exception is a pooled keep-alive socket the server already
+    closed: the transport reconnects once before this error is ever raised (R5).
     """
 
     def __init__(

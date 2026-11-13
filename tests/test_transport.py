@@ -107,6 +107,67 @@ class TestFailures:
         c.track("b", user_id="u1")
         assert len(server.requests) == 2
 
+    def test_a_pooled_socket_the_server_closed_is_reconnected_once(self, client, server):
+        """R5 (Ro-bot python#16 impact:F1): the server reaped the idle keep-alive socket.
+
+        The client still holds it, so the write lands on a dead socket. Losing the batch to
+        that is a bug: it is reconnected once at once, as urllib3, undici and HttpClient do.
+        """
+        heard: list = []
+        server.expect(Reply(close_after=True))
+        c = client(on_delivery_failure=heard.append)
+        assert c.track("a", user_id="u1") is True
+
+        assert c.track("b", user_id="u1") is True
+        assert [r.body["track"][0]["name"] for r in server.requests] == ["a", "b"]
+        assert server.requests[1].socket_id != server.requests[0].socket_id
+        assert heard == []
+
+    def test_a_reconnect_that_also_fails_after_the_write_is_dropped_not_retried(
+        self, client, server
+    ):
+        """One reconnect, never two: on the fresh socket a lost connection is maybe-reached."""
+        heard: list = []
+        server.expect(Reply(close_after=True), Reply(abort=True))
+        c = client(on_delivery_failure=heard.append)
+        c.track("a", user_id="u1")
+
+        assert c.track("b", user_id="u1") is False
+        assert [r.body["track"][0]["name"] for r in server.requests] == ["a", "b"]
+        assert [(f.kind, f.status, f.terminal) for f in heard] == [("dropped", None, True)]
+
+    def test_a_connection_lost_after_the_write_on_a_fresh_socket_is_not_retried(
+        self, client, server
+    ):
+        heard: list = []
+        server.expect(Reply(abort=True))
+        c = client(on_delivery_failure=heard.append)
+
+        assert c.track("a", user_id="u1") is False
+        assert len(server.requests) == 1
+        assert [(f.kind, f.terminal) for f in heard] == [("dropped", True)]
+
+    def test_without_keep_alive_a_lost_connection_is_not_retried(self, client, server):
+        heard: list = []
+        server.expect(Reply(), Reply(abort=True))
+        c = client(keep_alive=False, on_delivery_failure=heard.append)
+        c.track("a", user_id="u1")
+
+        assert c.track("b", user_id="u1") is False
+        assert len(server.requests) == 2
+        assert [f.kind for f in heard] == ["dropped"]
+
+    def test_a_timeout_on_a_pooled_socket_is_not_retried(self, client, server):
+        """Maybe-reached: the server may hold the events, so a resend risks a duplicate."""
+        heard: list = []
+        server.expect(Reply(), Reply(delay_s=0.5))
+        c = client(timeout=0.2, on_delivery_failure=heard.append)
+        c.track("a", user_id="u1")
+
+        assert c.track("b", user_id="u1") is False
+        assert len(server.requests) == 2
+        assert [(f.kind, f.terminal) for f in heard] == [("dropped", True)]
+
     def test_posting_after_close_raises(self, client):
         c = client()
         c.close()
