@@ -16,7 +16,7 @@ from ._errors import IntemptApiError, IntemptConfigError, IntemptError
 from ._flags import FlagContext, FlagDetail, FlagError, FlagReason
 from ._transport import ApiKeyCredentials, Transport
 
-__version__ = "2.1.0"
+__version__ = "3.0.0"
 
 __all__ = [
     "Intempt",
