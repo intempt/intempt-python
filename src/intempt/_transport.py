@@ -54,6 +54,11 @@ class ApiKeyCredentials:
     def authorization_header(self) -> str:
         return self._header
 
+    @property
+    def prefix(self) -> str:
+        """The public half, safe to log; it is what tells an operator which key was refused."""
+        return self._prefix
+
     def __repr__(self) -> str:
         return f"ApiKeyCredentials(prefix={self._prefix!r}, secret=<redacted>)"
 
@@ -132,6 +137,26 @@ class Transport:
             self._conn = conn
         return conn
 
+    def _connect(self, conn: http.client.HTTPConnection) -> None:
+        """Connect before writing, so a failure here is known to be never-reached."""
+        try:
+            conn.connect()
+        except OSError as exc:
+            self._drop_connection()
+            raise IntemptApiError(
+                str(exc) or type(exc).__name__,
+                cause=exc,
+                reached=False,
+                timed_out=isinstance(exc, socket.timeout),
+            ) from exc
+
+    @staticmethod
+    def _exchange(
+        conn: http.client.HTTPConnection, path: str, payload: bytes, headers: dict[str, str]
+    ) -> http.client.HTTPResponse:
+        conn.request("POST", path, body=payload, headers=headers)
+        return conn.getresponse()
+
     def post(self, path: str, body: Any) -> Any:
         """POST JSON, return the decoded body. Raises IntemptApiError on failure."""
         payload = json.dumps(body, default=_json_default).encode("utf-8")
@@ -149,22 +174,33 @@ class Transport:
         with self._lock:
             if self._closed:
                 raise IntemptApiError("client is closed")
+            conn = self._connection()
+            reused = conn.sock is not None
+            if not reused:
+                self._connect(conn)
             try:
-                conn = self._connection()
-                conn.request("POST", path, body=payload, headers=headers)
-                response = conn.getresponse()
+                try:
+                    response = self._exchange(conn, path, payload, headers)
+                except ConnectionError:
+                    # R5: on a pooled socket this is the server having reaped it while idle, so
+                    # the write never reached a live peer. Reconnect once at once, as urllib3,
+                    # undici and Java's HttpClient do. Not on a fresh socket: there the same
+                    # error comes after a write a live server may hold, and a resend duplicates.
+                    if not reused:
+                        raise
+                    self._drop_connection()
+                    conn = self._connection()
+                    self._connect(conn)
+                    response = self._exchange(conn, path, payload, headers)
                 raw = response.read().decode("utf-8", errors="replace")
                 status = response.status
                 retry_after = parse_retry_after(response.getheader("Retry-After"))
             except socket.timeout as exc:
                 self._drop_connection()
                 raise IntemptApiError(
-                    f"request timed out after {self._config.timeout}s", cause=exc
+                    f"request timed out after {self._config.timeout}s", cause=exc, timed_out=True
                 ) from exc
             except (http.client.HTTPException, OSError) as exc:
-                # A pooled connection the server already closed raises here on
-                # the next use. Drop it so the retry gets a fresh socket rather
-                # than failing again on the same dead one.
                 self._drop_connection()
                 raise IntemptApiError(str(exc) or type(exc).__name__, cause=exc) from exc
 

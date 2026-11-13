@@ -1,5 +1,46 @@
 # Changelog
 
+## 3.0.0 — unreleased
+
+### Changed — breaking
+
+- **Each request is sent once** (INT-7436). 503 and 429 get one resend after
+  `Retry-After` clamped to 1–60 s (1 s when absent); a wait over 5 s drops the batch
+  instead of sleeping. Every other answered status, 413 included, and a timeout after
+  the request was written are dropped and reported. A batch that never reached the
+  server stays queued for the next flush. The exponential backoff, the circuit breaker
+  and the 413 halving are gone. `IntemptApiError.retryable` is now true for 429 and 503
+  only; new `reached` and `timed_out` attributes say how a transport failure happened.
+  A pooled keep-alive socket the server already closed is not a lost batch: the
+  transport reconnects once at once and sends on the fresh socket.
+- **A kept batch waits for the timer, and the queue cap evicts the oldest event**
+  (ruling R4). While a batch that never reached the server is kept, reaching `size`
+  no longer sends; the batch goes out at the next `flush_ms` tick or an explicit
+  `flush()`. At `max_queue` the oldest queued event is dropped and reported `dropped`
+  and the new event is queued (`track` returns True); before, the new event was refused.
+- **Writes no longer raise for a delivery problem** (INT-7444). `track`, `track_batch`,
+  `identify`, `group`, `consent.grant/revoke` and the `ecommerce` methods return `bool`
+  (queued in batch mode, delivered in direct mode). A new `on_delivery_failure` option
+  receives a `DeliveryFailure` once per batch on its final outcome. `flush()` and
+  `close()` return `FlushResult(sent, failed)`. Code that caught `IntemptApiError`
+  around a write must read the return value or the listener instead. Bad arguments and
+  a closed client still raise; `recommend()` still raises.
+- **`all_flags()` no longer records exposures** (INT-7456). It sends `exposure: false`,
+  so a bulk read does not count every key as seen; read the key you show with
+  `variation()`, or pass `all_flags(..., log_exposure=True)`. Needs the matching
+  audience-service change; until then the service ignores the field.
+
+### Added
+
+- **`on_flag_error` and public `variation_detail()`** (INT-7454). A failed evaluation
+  still returns the default, and now calls `on_flag_error(FlagError(key, kind, status))`
+  with `kind` one of `auth`, `bad_request`, `server`, `timeout`, `network`, `parse`.
+  `variation_detail()` returns `FlagDetail(value, reason, error)` with `reason="error"`
+  on a failure; a 200 with no choice stays `off`. 401/403 is logged at error level once
+  per client, naming the key prefix and `source_id`, then at debug.
+- **`disable_exposure=True`** on `variation`, `variation_detail` and the typed variants
+  (INT-7456), for a read that does not display the value.
+
 ## 2.1.0 — unreleased
 
 ### Changed

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import datetime as _dt
+import json
 
 import pytest
 
@@ -123,6 +124,16 @@ class TestEcommerce:
         item = server.requests[0].body["track"][0]
         assert item["name"] == "Product viewed"
         assert item["payload"][0]["data"] == {"productId": "sku-1"}
+
+    def test_added_to_cart(self, client, server):
+        assert client().ecommerce.added_to_cart(product_id="sku-1", quantity=2, user_id="u1")
+        item = server.requests[0].body["track"][0]
+        assert item["name"] == "Added to cart"
+        assert item["payload"][0]["data"] == {"productId": "sku-1", "quantity": 2}
+
+    def test_ordered_uses_the_reserved_name(self, client, server):
+        assert client().ecommerce.ordered(user_id="u1", products=[{"product_id": "a"}])
+        assert server.requests[0].body["track"][0]["name"] == "Product ordered"
 
     def test_added_to_cart_requires_a_positive_quantity(self, client):
         with pytest.raises(IntemptConfigError, match="quantity must be a positive integer"):
@@ -289,18 +300,20 @@ class TestLifecycle:
 
 
 class TestErrors:
+    # Delivery writes no longer raise (INT-7444), so the error surface is pinned on recommend(),
+    # which still does.
     def test_surfaces_a_500_with_status_and_body(self, client, server):
         server.expect(Reply(status=500, body='{"error":"boom"}'))
         with pytest.raises(IntemptApiError) as caught:
-            client().track("purchase", user_id="u1")
+            client().recommend(user_id="u1", feed_id="f", fields=["id"])
         assert caught.value.status == 500
         assert "boom" in caught.value.body
-        assert caught.value.retryable is True
+        assert caught.value.retryable is False
 
     def test_a_400_is_not_retryable(self, client, server):
         server.expect(Reply(status=400, body="bad"))
         with pytest.raises(IntemptApiError) as caught:
-            client().track("purchase", user_id="u1")
+            client().recommend(user_id="u1", feed_id="f", fields=["id"])
         assert caught.value.retryable is False
 
     def test_never_leaks_the_credential(self, client, server):
@@ -309,7 +322,7 @@ class TestErrors:
 
         server.expect(Reply(status=500, body="boom"))
         try:
-            client().track("purchase", user_id="u1")
+            client().recommend(user_id="u1", feed_id="f", fields=["id"])
         except IntemptApiError as exc:
             views = [
                 str(exc),
@@ -321,3 +334,21 @@ class TestErrors:
         for view in views:
             assert secret not in view
             assert basic not in view
+
+
+class TestNoSessionOnTrack:
+    """INT-7446 (CONTRACT-R2 S5): a server SDK sends no sessionId on any write and never invents
+    one; a caller-supplied session id is accepted on flag calls only (tests/test_flags.py)."""
+
+    def test_no_write_carries_a_session_id(self, client, server):
+        c = client()
+        c.track("a", user_id="u1", session_id="s-1")
+        c.track_batch([{"event": "b", "user_id": "u1", "session_id": "s-1"}])
+        c.identify(user_id="u1", session_id="s-1")
+        c.group(user_id="u1", account_id="acc", session_id="s-1")
+        c.ecommerce.product_viewed(user_id="u1", product_id="p", session_id="s-1")
+
+        assert len(server.requests) == 5
+        for request in server.requests:
+            assert "sessionId" not in json.dumps(request.body)
+            assert "session" not in json.dumps(request.body).lower()

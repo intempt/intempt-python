@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 import intempt
-from tests.conftest import API_KEY, ORG, PROJECT, SOURCE
+from tests.conftest import API_KEY, ORG, PROJECT, SOURCE, Reply
 
 #: Spawns a subprocess per test. Excluded from the mutation run; see pyproject.
 pytestmark = pytest.mark.sample
@@ -181,6 +181,15 @@ class TestSampleApp:
         _wait_for(server, 1)
         consent = [r for r in server.requests if r.path.endswith("/consents/data")]
         assert consent and consent[0].body["action"] == "reject"
+
+    def test_a_failed_forget_is_not_answered_as_ok(self, app, server):
+        """Ro-bot mcp-1794574163-40 security:F1: revoke() returns False instead of raising (R2), and
+        the sample answered 202 ok:true anyway, so a lost privacy withdrawal looked done."""
+        base, _ = app
+        server.replies.append(Reply(status=400))
+        status, body = post(base + "/forget", "user=ada@example.com")
+        assert status == 502
+        assert body.get("ok") is not True
 
     def test_recommend_degrades_rather_than_failing_the_page(self, app, server):
         """A feed error must not become a 500 for the customer."""

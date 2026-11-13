@@ -11,11 +11,12 @@ from __future__ import annotations
 from ._buffer import Buffer
 from ._client import COMMERCE_EVENTS, IDENTIFY_EVENT, Consent, Ecommerce, Intempt
 from ._config import BatchOptions, ResolvedConfig
+from ._delivery import DeliveryFailure, FlushResult
 from ._errors import IntemptApiError, IntemptConfigError, IntemptError
-from ._flags import FlagContext
+from ._flags import FlagContext, FlagDetail, FlagError, FlagReason
 from ._transport import ApiKeyCredentials, Transport
 
-__version__ = "2.1.0"
+__version__ = "3.0.0"
 
 __all__ = [
     "Intempt",
@@ -23,6 +24,8 @@ __all__ = [
     "IntemptApiError",
     "IntemptConfigError",
     "BatchOptions",
+    "DeliveryFailure",
+    "FlushResult",
     "ResolvedConfig",
     "ApiKeyCredentials",
     "Transport",
@@ -32,5 +35,8 @@ __all__ = [
     "COMMERCE_EVENTS",
     "IDENTIFY_EVENT",
     "FlagContext",
+    "FlagDetail",
+    "FlagError",
+    "FlagReason",
     "__version__",
 ]

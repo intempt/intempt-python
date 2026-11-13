@@ -66,6 +66,12 @@ class ResolvedConfig:
     max_request_events: int = DEFAULT_MAX_REQUEST_EVENTS
     max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS
     logger: Any = field(default_factory=lambda: logging.getLogger("intempt"))
+    #: Hears each batch's final delivery failure once (INT-7444). Exceptions it
+    #: raises are caught and logged.
+    on_delivery_failure: Any = None
+    #: Hears each failed flag evaluation (INT-7454). Exceptions it raises are
+    #: swallowed and logged; the caller still gets its default.
+    on_flag_error: Any = None
 
     def project_path(self, suffix: str) -> str:
         from urllib.parse import quote
@@ -107,6 +113,15 @@ def _is_positive_long(value: str) -> bool:
     return re.fullmatch(r"[1-9][0-9]{0,18}", value) is not None and (
         len(value) < len(_LONG_MAX) or value <= _LONG_MAX
     )
+
+
+_HOOKS = ("on_delivery_failure", "on_flag_error")
+
+
+def _callable_or_none(value: Any, name: str) -> Any:
+    if value is not None and not callable(value):
+        raise IntemptConfigError(f"{name} must be callable")
+    return value
 
 
 def resolve_config(**options: Any) -> ResolvedConfig:
@@ -158,6 +173,8 @@ def resolve_config(**options: Any) -> ResolvedConfig:
     logger = options.get("logger") or logging.getLogger("intempt")
     assert_logger(logger)
 
+    hooks = {name: _callable_or_none(options.get(name), name) for name in _HOOKS}
+
     # Imported here rather than at module scope: _transport imports _config for
     # ResolvedConfig, so a top-level import would be circular.
     from ._transport import ApiKeyCredentials
@@ -178,6 +195,7 @@ def resolve_config(**options: Any) -> ResolvedConfig:
         max_request_events=max_request_events,
         max_concurrent_requests=max_concurrent,
         logger=logger,
+        **hooks,
     )
 
 
@@ -222,6 +240,9 @@ def merge_config(current: ResolvedConfig, patch: Mapping[str, Any]) -> ResolvedC
     if "logger" in patch:
         assert_logger(patch["logger"])
         changes["logger"] = patch["logger"]
+    for name in _HOOKS:
+        if name in patch:
+            changes[name] = _callable_or_none(patch[name], name)
     for name in ("path", "debug", "max_request_events", "max_concurrent_requests"):
         if name in patch:
             changes[name] = patch[name]
