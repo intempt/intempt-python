@@ -6,7 +6,7 @@ final outcome of each batch once, and ``flush()``/``close()`` return ``{sent, fa
 
 from __future__ import annotations
 
-from intempt import BatchOptions, IntemptApiError
+from intempt import BatchOptions, FlushResult, IntemptApiError
 from intempt._buffer import Buffer
 from tests.conftest import Reply
 from tests.test_buffer import RecordedSleep, api, event, scripted
@@ -105,15 +105,6 @@ class TestListener:
         buffer.flush()
 
         assert [f.event_ids for f in heard.failures] == [("a",), ("b",)]
-
-    def test_a_queue_overflow_is_reported_as_dropped(self):
-        heard = Heard()
-        buffer = buffer_with(lambda events: None, heard, size=5, max_queue=5)
-        for name in "abcde":
-            buffer._queue.append(event(name))
-        assert buffer.enqueue(event("over")) is False
-
-        assert heard.shapes == [("dropped", None, 1, ("over",), None, True)]
 
     def test_commerce_lines_sharing_an_event_id_report_it_once(self, batched, server):
         heard = Heard()
@@ -274,3 +265,170 @@ class TestConsentIsNeverSilent:
         assert c.consent.grant(user_id="u1") is True
         assert heard.failures == []
         assert logger.calls["error"] == []
+
+
+class TestKeptBatchWaits:
+    """R4: a batch that never reached the server waits for the next flush interval.
+
+    Enqueue never starts a network attempt while it waits, the timer is re-armed so it is not
+    stranded, and the queue cap evicts the oldest waiting event instead of refusing the newest.
+    """
+
+    @staticmethod
+    def kept_buffer(send, heard, *, size=2, max_queue=100):
+        return buffer_with(send, heard, size=size, max_queue=max_queue)
+
+    def test_enqueue_starts_no_attempt_while_a_kept_batch_waits(self):
+        down = IntemptApiError("refused", reached=False)
+        send = scripted(down)
+        buffer = self.kept_buffer(send, Heard())
+        buffer.enqueue(event("a"))
+        buffer.enqueue(event("b"))
+        assert send.calls == [["a", "b"]]
+
+        assert buffer.enqueue(event("c")) is True
+        assert buffer.enqueue(event("d")) is True
+        assert send.calls == [["a", "b"]]
+        buffer.close()
+
+    def test_an_explicit_flush_still_retries_and_a_delivery_ends_the_wait(self):
+        down = IntemptApiError("refused", reached=False)
+        send = scripted(down)
+        buffer = self.kept_buffer(send, Heard())
+        for name in "abcd":
+            buffer.enqueue(event(name))
+
+        assert buffer.flush() == FlushResult(sent=4, failed=0)
+        buffer.enqueue(event("e"))
+        buffer.enqueue(event("f"))
+        assert send.calls == [["a", "b"], ["a", "b"], ["c", "d"], ["e", "f"]]
+        buffer.close()
+
+    def test_an_answered_drop_also_ends_the_wait(self):
+        down = IntemptApiError("refused", reached=False)
+        send = scripted(down, api(400))
+        buffer = self.kept_buffer(send, Heard())
+        buffer.enqueue(event("a"))
+        buffer.enqueue(event("b"))
+        buffer.flush()
+
+        buffer.enqueue(event("c"))
+        buffer.enqueue(event("d"))
+        assert send.calls == [["a", "b"], ["a", "b"], ["c", "d"]]
+        buffer.close()
+
+    def test_a_kept_flush_rearms_the_timer_at_the_flush_interval(self):
+        down = IntemptApiError("refused", reached=False)
+        buffer = self.kept_buffer(scripted(down, down), Heard())
+        buffer.enqueue(event("a"))
+        buffer.enqueue(event("b"))
+        try:
+            assert buffer._timer is not None
+            assert buffer._timer.interval == 60.0
+            buffer.flush()
+            assert buffer._timer is not None
+        finally:
+            buffer.close()
+        assert buffer._timer is None
+
+    def test_a_delivered_flush_leaves_no_timer_behind(self):
+        buffer = self.kept_buffer(scripted(), Heard())
+        buffer.enqueue(event("a"))
+        buffer.enqueue(event("b"))
+
+        assert buffer._timer is None
+        buffer.close()
+
+    def test_the_timer_retries_a_kept_batch(self):
+        down = IntemptApiError("refused", reached=False)
+        send = scripted(down)
+        buffer = self.kept_buffer(send, Heard())
+        buffer.enqueue(event("a"))
+        buffer.enqueue(event("b"))
+
+        buffer._on_timer()
+        assert send.calls == [["a", "b"], ["a", "b"]]
+        assert buffer.size == 0
+        buffer.close()
+
+    def test_at_the_cap_the_oldest_waiting_event_is_evicted(self, logger):
+        heard = Heard()
+        send = scripted()
+        buffer = buffer_with(send, heard, size=5, max_queue=5)
+        buffer._logger = logger
+        for name in "abcde":
+            buffer._queue.append(event(name))
+
+        assert buffer.enqueue(event("new")) is True
+        assert heard.shapes == [("dropped", None, 1, ("a",), None, True)]
+        assert logger.has("error", "oldest event dropped")
+        assert send.calls == [["b", "c", "d", "e", "new"]]
+
+    def test_an_evicted_kept_event_is_forgotten_by_the_once_only_report(self):
+        down = IntemptApiError("refused", reached=False)
+        heard = Heard()
+        buffer = self.kept_buffer(scripted(down), heard, size=2, max_queue=2)
+        buffer.enqueue(event("a"))
+        buffer.enqueue(event("b"))
+
+        buffer.enqueue(event("c"))
+        assert buffer._reported_unreached == {id(item) for item in buffer._queue[:1]}
+        assert [f.event_ids for f in heard.failures] == [("a", "b"), ("a",)]
+        buffer.close()
+
+    def test_events_in_flight_are_never_evicted(self):
+        import threading
+
+        entered = threading.Event()
+        release = threading.Event()
+        heard = Heard()
+        sent: list[list[str]] = []
+
+        def send(events):
+            sent.append([e["name"] for e in events])
+            if len(sent) == 1:
+                entered.set()
+                release.wait(5)
+
+        buffer = buffer_with(send, heard, size=2, max_queue=3)
+        producer = threading.Thread(
+            target=lambda: [buffer.enqueue(event("a")), buffer.enqueue(event("b"))]
+        )
+        producer.start()
+        assert entered.wait(5)
+        try:
+            assert buffer.enqueue(event("c")) is True
+            assert buffer.enqueue(event("d")) is True
+            assert [e["name"] for e in buffer._queue] == ["a", "b", "d"]
+            assert [f.event_ids for f in heard.failures] == [("c",)]
+        finally:
+            release.set()
+            producer.join(5)
+        assert sent == [["a", "b"], ["d"]]
+        assert buffer.size == 0
+        buffer.close()
+
+    def test_when_every_queued_event_is_in_flight_the_new_one_is_refused(self):
+        import threading
+
+        entered = threading.Event()
+        release = threading.Event()
+        heard = Heard()
+
+        def send(_events):
+            entered.set()
+            release.wait(5)
+
+        buffer = buffer_with(send, heard, size=2, max_queue=2)
+        producer = threading.Thread(
+            target=lambda: [buffer.enqueue(event("a")), buffer.enqueue(event("b"))]
+        )
+        producer.start()
+        assert entered.wait(5)
+        try:
+            assert buffer.enqueue(event("late")) is False
+            assert [f.event_ids for f in heard.failures] == [("late",)]
+        finally:
+            release.set()
+            producer.join(5)
+        buffer.close()

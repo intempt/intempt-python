@@ -13,6 +13,11 @@
   only; new `reached` and `timed_out` attributes say how a transport failure happened.
   A pooled keep-alive socket the server already closed is not a lost batch: the
   transport reconnects once at once and sends on the fresh socket.
+- **A kept batch waits for the timer, and the queue cap evicts the oldest event**
+  (ruling R4). While a batch that never reached the server is kept, reaching `size`
+  no longer sends; the batch goes out at the next `flush_ms` tick or an explicit
+  `flush()`. At `max_queue` the oldest queued event is dropped and reported `dropped`
+  and the new event is queued (`track` returns True); before, the new event was refused.
 - **Writes no longer raise for a delivery problem** (INT-7444). `track`, `track_batch`,
   `identify`, `group`, `consent.grant/revoke` and the `ecommerce` methods return `bool`
   (queued in batch mode, delivered in direct mode). A new `on_delivery_failure` option

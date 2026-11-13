@@ -123,7 +123,11 @@ Each request is sent once, in batch and direct mode alike.
 | 503, 429 | resend once after `Retry-After` clamped to 1–60 s (1 s when absent); a wait over 5 s drops instead of sleeping |
 | any other status (400, 401–404, 408, 413, 500, 502, 504, …) | drop and report |
 | timeout or broken connection after the request was written | drop and report; the server may already have it |
-| never reached the server (DNS, refused, connect timeout) | batch mode keeps the batch for the next flush; direct mode drops and reports |
+| never reached the server (DNS, refused, connect timeout) | batch mode keeps the batch until the next timed flush (`flush_ms`) or an explicit `flush()`, and reaching `size` meanwhile sends nothing; direct mode drops and reports |
+| a pooled keep-alive socket the server already closed | reconnect once at once and send on the fresh socket |
+
+At `max_queue` the oldest queued event that no send is carrying is dropped and reported
+`dropped`, and the new event is queued.
 
 The buffer is in memory. A hard crash loses it.
 

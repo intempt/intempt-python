@@ -7,7 +7,8 @@ and Consumer.
 Changed substantially. Each batch is sent once under the table in
 ``_delivery`` (INT-7436): no in-call retry loop, no backoff, no circuit breaker
 and no 413 halving, all of which mixpanel-python and earlier versions of this
-SDK had. A batch that never reached the server stays queued for the next flush.
+SDK had. A batch that never reached the server stays queued and waits for the
+next timed or explicit flush (R4).
 A close-initiated drain is bounded.
 
 Deliberately in memory. Crash durability needs disk with fsync, file locking and
@@ -68,6 +69,12 @@ class Buffer:
         self._reported_unreached: set[int] = set()
         self._stopped = False
         self._close_deadline: float | None = None
+        #: R4: a batch that never reached the server waits for the timer or an explicit flush;
+        #: enqueue reaching ``size`` must not turn an outage into one attempt per track().
+        self._holding = False
+        #: Head-of-queue events a send is carrying. The post-send delete removes them by
+        #: position, so the cap may evict only behind them.
+        self._in_flight = 0
 
         # One lock guards the queue; one guards draining, so two callers can
         # never drain the same slice.
@@ -83,18 +90,40 @@ class Buffer:
     # -- queueing ---------------------------------------------------------
 
     def enqueue(self, event: dict[str, Any]) -> bool:
-        """Buffer an event. False when it was dropped instead, which is also reported."""
+        """Buffer an event. False when it was dropped instead, which is also reported.
+
+        At the cap the oldest event no send is carrying is evicted and reported ``dropped``, so the
+        newest data survives an outage (R4). Only when every queued event is in flight is the new
+        one refused.
+        """
+        evicted: dict[str, Any] | None = None
         with self._lock:
+            at_cap = len(self._queue) >= self._options.max_queue
             if self._stopped:
                 reason = "[intempt] batching is stopped; event dropped"
                 extra: dict[str, Any] = {"event_name": event.get("name")}
-            elif len(self._queue) >= self._options.max_queue:
+            elif at_cap and len(self._queue) == self._in_flight:
                 reason = "[intempt] batch queue full; event dropped"
                 extra = {"event_name": event.get("name"), "max_queue": self._options.max_queue}
             else:
+                if at_cap:
+                    evicted = self._queue.pop(self._in_flight)
+                    self._reported_unreached.discard(id(evicted))
                 self._queue.append(event)
                 full = len(self._queue) >= self._batch_size
+                drain = full and not self._holding and self._in_flight == 0
                 reason = ""
+
+        if evicted is not None:
+            self._logger.error(
+                "[intempt] batch queue full; oldest event dropped",
+                extra={"event_name": evicted.get("name"), "max_queue": self._options.max_queue},
+            )
+            self._report(
+                DeliveryFailure(
+                    kind="dropped", event_count=1, event_ids=event_ids([evicted]), terminal=True
+                )
+            )
 
         if reason:
             self._logger.error(reason, extra=extra)
@@ -105,7 +134,7 @@ class Buffer:
             )
             return False
 
-        if full:
+        if drain:
             self.flush()
         else:
             self._schedule_flush()
@@ -128,16 +157,24 @@ class Buffer:
                     if self._stopped or not self._queue:
                         break
                     batch = self._queue[: self._batch_size]
+                    self._in_flight = len(batch)
 
                 outcome, failure = self._attempt(batch)
-                if outcome == "kept":
+                kept = outcome == "kept"
+                # One lock span for releasing the head and deleting it: in between, the cap
+                # could evict from the head and the positional delete would drop the wrong events.
+                with self._lock:
+                    self._in_flight = 0
+                    self._holding = kept
+                    if not kept:
+                        del self._queue[: len(batch)]
+                        for item in batch:
+                            self._reported_unreached.discard(id(item))
+                if kept:
                     self._report_unreached(batch, failure)
+                    self._schedule_flush()
                     break
 
-                with self._lock:
-                    del self._queue[: len(batch)]
-                    for item in batch:
-                        self._reported_unreached.discard(id(item))
                 if outcome == "sent":
                     sent += len(batch)
                 elif outcome == "dropped":
