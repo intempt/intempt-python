@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 
 import pytest
@@ -257,4 +258,133 @@ class TestTransportUnit:
         )
         transport = Transport(config, ApiKeyCredentials(API_KEY))
         transport.close()
+        transport.close()
+
+
+def _transport(server, **overrides):
+    config = resolve_config(
+        org=ORG, project=PROJECT, api_key=API_KEY, host=server.host, scheme="http", **overrides
+    )
+    return config, Transport(config, ApiKeyCredentials(API_KEY))
+
+
+class _DeadSocket:
+    """Connects, then fails every write with an OSError that carries no message."""
+
+    def setsockopt(self, *_args):
+        pass
+
+    def sendall(self, _data):
+        raise OSError()
+
+    def close(self):
+        pass
+
+
+class TestTransportErrorShapes:
+    """What an IntemptApiError carries is how the caller tells never-reached from maybe-reached.
+
+    The connect failures are injected through ``socket.create_connection``, which
+    http.client binds per connection, so no test waits on a real network timeout.
+    """
+
+    @staticmethod
+    def refuse_with(monkeypatch, error):
+        def create_connection(*_args, **_kwargs):
+            raise error
+
+        monkeypatch.setattr(socket, "create_connection", create_connection)
+
+    def test_a_refused_connect_is_never_reached_and_carries_its_cause(self, server, monkeypatch):
+        refused = ConnectionRefusedError(111, "Connection refused")
+        self.refuse_with(monkeypatch, refused)
+        config, transport = _transport(server)
+
+        with pytest.raises(IntemptApiError) as caught:
+            transport.post(config.project_path("/track"), {})
+        assert caught.value.reached is False
+        assert caught.value.timed_out is False
+        assert caught.value.cause is refused
+        assert caught.value.__cause__ is refused
+        assert str(caught.value) == str(refused)
+        assert transport._conn is None
+
+    def test_a_connect_timeout_is_never_reached_and_timed_out(self, server, monkeypatch):
+        self.refuse_with(monkeypatch, socket.timeout("timed out"))
+        config, transport = _transport(server)
+
+        with pytest.raises(IntemptApiError) as caught:
+            transport.post(config.project_path("/track"), {})
+        assert (caught.value.reached, caught.value.timed_out) == (False, True)
+
+    def test_a_connect_error_without_a_message_is_named_by_its_type(self, server, monkeypatch):
+        self.refuse_with(monkeypatch, OSError())
+        config, transport = _transport(server)
+
+        with pytest.raises(IntemptApiError, match="^OSError$"):
+            transport.post(config.project_path("/track"), {})
+
+    def test_a_write_error_without_a_message_is_named_by_its_type(self, server, monkeypatch):
+        monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: _DeadSocket())
+        config, transport = _transport(server)
+
+        with pytest.raises(IntemptApiError) as caught:
+            transport.post(config.project_path("/track"), {})
+        assert str(caught.value) == "OSError"
+        assert type(caught.value.cause) is OSError
+        assert caught.value.reached is True
+
+    def test_a_lost_connection_after_the_write_carries_its_cause(self, server):
+        server.reset()
+        server.expect(Reply(abort=True))
+        config, transport = _transport(server)
+
+        with pytest.raises(IntemptApiError) as caught:
+            transport.post(config.project_path("/track"), {})
+        cause = caught.value.cause
+        assert isinstance(cause, ConnectionError)
+        assert caught.value.__cause__ is cause
+        assert str(caught.value) == str(cause)
+        assert (caught.value.reached, caught.value.timed_out) == (True, False)
+
+    def test_a_timeout_after_the_write_carries_its_cause(self, server):
+        server.reset()
+        server.expect(Reply(delay_s=0.5))
+        config, transport = _transport(server, timeout=0.05)
+
+        with pytest.raises(IntemptApiError, match="timed out after 0.05s") as caught:
+            transport.post(config.project_path("/track"), {})
+        assert isinstance(caught.value.cause, socket.timeout)
+        assert caught.value.__cause__ is caught.value.cause
+
+    def test_a_body_that_is_not_utf8_is_decoded_with_replacement(self, server):
+        server.reset()
+        server.expect(Reply(raw=b"\xff\xfe"))
+        config, transport = _transport(server)
+
+        assert transport.post(config.project_path("/track"), {}) == "\ufffd\ufffd"
+
+    def test_posting_on_a_closed_transport_says_so(self, server):
+        config, transport = _transport(server)
+        transport.close()
+
+        with pytest.raises(IntemptApiError, match="^client is closed$"):
+            transport.post(config.project_path("/track"), {})
+
+    @pytest.mark.parametrize(("keep_alive", "header"), [(True, "keep-alive"), (False, "close")])
+    def test_the_connection_header_follows_keep_alive(self, server, keep_alive, header):
+        server.reset()
+        config, transport = _transport(server, keep_alive=keep_alive)
+        transport.post(config.project_path("/track"), {})
+
+        assert server.requests[0].headers["connection"] == header
+        transport.close()
+
+    def test_debug_logs_the_path_and_never_the_body(self, server, logger):
+        server.reset()
+        config, transport = _transport(server, debug=True, logger=logger)
+        path = config.project_path("/track")
+        transport.post(path, {"secret": "x"})
+
+        assert logger.calls["debug"] == [f"[intempt] POST {path}"]
         transport.close()

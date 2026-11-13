@@ -432,3 +432,195 @@ class TestKeptBatchWaits:
             release.set()
             producer.join(5)
         buffer.close()
+
+
+class TestWhatAFailureCarries:
+    """The listener's shape and the structured log fields are what an operator acts on."""
+
+    def test_a_direct_failure_reports_its_count_ids_and_structured_log(
+        self, client, server, logger
+    ):
+        heard = Heard()
+        server.expect(Reply(status=500))
+        c = client(on_delivery_failure=heard)
+
+        assert c.track("a", user_id="u1") is False
+        event_id = server.requests[0].body["track"][0]["payload"][0]["eventId"]
+        assert heard.shapes == [("terminal", 500, 1, (event_id,), None, True)]
+        assert logger.has("error", "] send failed; 1 event(s) dropped")
+        assert logger.context["error"] == [{"status": 500, "kind": "terminal"}]
+
+    def test_a_listener_that_raises_is_logged_with_its_traceback(self, client, server, caplog):
+        import logging
+
+        def listener(_failure):
+            raise RuntimeError("listener broke")
+
+        caplog.set_level(logging.ERROR, logger="intempt.listener")
+        server.expect(Reply(status=500))
+        c = client(on_delivery_failure=listener, logger=logging.getLogger("intempt.listener"))
+
+        assert c.track("a", user_id="u1") is False
+        raised = [r for r in caplog.records if "on_delivery_failure raised" in r.getMessage()]
+        assert len(raised) == 1 and raised[0].exc_info is not None
+
+    def test_a_deliberate_discard_is_not_a_failure(self, client, logger):
+        heard = Heard()
+        c = client(on_delivery_failure=heard)
+
+        assert c._deliver_now(lambda: False, 1, ()) is False
+        assert heard.failures == [] and logger.calls["error"] == []
+
+    def test_the_resend_wait_uses_the_real_clock_by_default(self, client):
+        import time
+
+        assert client()._sleep is time.sleep
+
+    def test_an_empty_track_batch_is_accepted(self, client, server):
+        assert client().track_batch([]) is True
+        assert server.requests == []
+
+    def test_a_batched_track_batch_queues_every_event(self, batched):
+        c = batched()
+        assert c.track_batch([{"event": "a", "user_id": "u1"}, {"event": "b", "user_id": "u1"}])
+        assert c.buffered == 2
+
+    def test_events_queued_before_opt_out_are_discarded_not_counted(self, batched, logger):
+        c = batched()
+        c.track("a", user_id="u1")
+        c.track("b", user_id="u1")
+        c.opt_out()
+
+        assert c.flush() == FlushResult(sent=0, failed=0)
+        assert logger.has("warning", "discarding 2 buffered event(s)")
+
+
+class TestBufferFailureDetail:
+    def test_an_event_refused_by_a_stopped_buffer_is_reported(self):
+        heard = Heard()
+        buffer = buffer_with(lambda events: None, heard)
+        buffer.close()
+
+        assert buffer.enqueue(event("late")) is False
+        assert heard.shapes == [("dropped", None, 1, ("late",), None, True)]
+
+    def test_an_eviction_logs_which_event_and_the_cap(self, logger):
+        buffer = buffer_with(scripted(), Heard(), size=5, max_queue=5)
+        buffer._logger = logger
+        for name in "abcde":
+            buffer._queue.append(event(name))
+        buffer.enqueue(event("new"))
+
+        assert logger.context["error"][0] == {"event_name": "a", "max_queue": 5}
+
+    def test_a_batch_that_cannot_be_encoded_is_dropped_with_a_traceback(self, caplog):
+        import logging
+
+        def send(_events):
+            raise TypeError("not JSON serialisable")
+
+        heard = Heard()
+        caplog.set_level(logging.ERROR, logger="intempt.encode")
+        buffer = buffer_with(send, heard)
+        buffer._logger = logging.getLogger("intempt.encode")
+        buffer.enqueue(event("a"))
+        buffer.enqueue(event("b"))
+
+        assert buffer.flush() == FlushResult(sent=0, failed=2)
+        assert heard.shapes == [("dropped", None, 2, ("a", "b"), None, True)]
+        assert buffer.size == 0
+        logged = [r for r in caplog.records if "could not be sent" in r.getMessage()]
+        assert len(logged) == 1 and logged[0].exc_info is not None
+
+    def test_failed_counts_every_dropped_batch_with_structured_fields(self, logger):
+        buffer = buffer_with(scripted(api(400), api(400)), Heard(), size=2)
+        buffer._logger = logger
+        for name in "abcd":
+            buffer._queue.append(event(name))
+
+        assert buffer.flush() == FlushResult(sent=0, failed=4)
+        assert logger.context["error"] == [{"status": 400, "kind": "terminal", "count": 2}] * 2
+
+    def test_a_kept_batch_is_forgotten_once_delivered(self, logger):
+        down = IntemptApiError("refused", reached=False)
+        buffer = buffer_with(scripted(down), Heard(), size=10)
+        buffer._logger = logger
+        buffer.enqueue(event("a"))
+        buffer.enqueue(event("b"))
+        buffer.flush()
+        assert logger.has("warning", "2 event(s) kept for the next flush")
+
+        assert buffer.flush() == FlushResult(sent=2, failed=0)
+        assert buffer._reported_unreached == set()
+        buffer.close()
+
+    def test_a_stopped_buffer_sends_nothing_even_with_events_left(self):
+        send = scripted()
+        buffer = buffer_with(send, Heard())
+        buffer._stopped = True
+        buffer._queue.append(event("a"))
+
+        assert buffer.flush() == FlushResult(sent=0, failed=0)
+        assert send.calls == []
+
+    def test_what_close_abandons_is_reported_and_a_later_flush_is_harmless(self):
+        heard = Heard()
+        buffer = buffer_with(scripted(), heard, close_budget_s=0.0)
+        buffer.enqueue(event("a"))
+        buffer.enqueue(event("b"))
+
+        assert buffer.close() == FlushResult(sent=0, failed=2)
+        assert heard.shapes == [("dropped", None, 2, ("a", "b"), None, True)]
+        assert buffer.flush() == FlushResult(sent=0, failed=0)
+
+    def test_close_does_not_sleep_past_its_budget_on_a_retry_after(self):
+        heard = Heard()
+        buffer = buffer_with(scripted(api(503, retry_after_ms=2_000)), heard, close_budget_s=1.0)
+        buffer.enqueue(event("a"))
+
+        assert buffer.close() == FlushResult(sent=0, failed=1)
+        assert buffer._sleep.waits == []
+        assert [f.kind for f in heard.failures] == ["dropped"]
+
+    def test_the_exit_hook_is_registered_and_removed_on_close(self, monkeypatch):
+        import atexit
+
+        registered: list = []
+        removed: list = []
+        monkeypatch.setattr(atexit, "register", registered.append)
+        monkeypatch.setattr(atexit, "unregister", removed.append)
+        buffer = Buffer(
+            options=BatchOptions(size=10, flush_ms=60_000, max_queue=100, flush_on_exit=True),
+            max_request_events=50,
+            logger=_Quiet(),
+            send=lambda events: None,
+        )
+        assert registered == [buffer._on_exit]
+
+        buffer.close()
+        assert removed == [buffer._on_exit]
+        assert buffer._exit_hook is None
+
+    def test_a_stopped_buffer_schedules_no_timer(self):
+        buffer = buffer_with(scripted(), Heard())
+        buffer.close()
+
+        buffer._schedule_flush()
+        assert buffer._timer is None
+
+    def test_the_timer_is_a_daemon_that_flushes(self):
+        import threading
+
+        delivered = threading.Event()
+        buffer = Buffer(
+            options=BatchOptions(size=10, flush_ms=10, max_queue=100, flush_on_exit=False),
+            max_request_events=50,
+            logger=_Quiet(),
+            send=lambda events: delivered.set(),
+        )
+        buffer.enqueue(event("a"))
+        timer = buffer._timer
+        assert timer is not None and timer.daemon is True
+
+        assert delivered.wait(5)
+        buffer.close()

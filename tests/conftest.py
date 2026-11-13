@@ -49,6 +49,8 @@ class Reply:
     close_after: bool = False
     #: Read the request, then close the socket without answering.
     abort: bool = False
+    #: Bytes to answer with instead of ``body``, for a body that is not valid UTF-8.
+    raw: bytes | None = None
 
 
 class RecordingServer:
@@ -92,7 +94,7 @@ class RecordingServer:
                     self._hang_up()
                     return
 
-                payload = reply.body.encode("utf-8")
+                payload = reply.raw if reply.raw is not None else reply.body.encode("utf-8")
                 self.send_response(reply.status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))

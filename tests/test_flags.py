@@ -269,6 +269,21 @@ class TestTypedHelpers:
 
         assert c.number_variation("f", CTX, 0) == 42
 
+    @pytest.mark.parametrize(
+        ("method", "served", "default", "expected"),
+        [
+            ("string_variation", "blue", "red", "blue"),
+            ("string_variation", 7, "red", "red"),
+            ("json_variation", {"a": 1}, {"z": 0}, {"a": 1}),
+            ("json_variation", [1], {"z": 0}, {"z": 0}),
+        ],
+    )
+    def test_string_and_json_reads_accept_their_type_and_fall_back_otherwise(
+        self, client, server, method, served, default, expected
+    ):
+        server.expect(_choices({"name": "f", "body": served}))
+        assert getattr(client(), method)("f", CTX, default) == expected
+
 
 class TestAllFlags:
     def test_returns_every_key_in_one_call(self, client, server):
@@ -458,11 +473,38 @@ class TestExposure:
         client().variation("checkout_v2", CTX, 0)
         assert "exposure" not in server.requests[-1].body
 
-    @pytest.mark.parametrize("method", ["variation", "variation_detail", "bool_variation"])
-    def test_a_single_read_can_opt_out_of_exposure(self, client, server, method):
+    @pytest.mark.parametrize(
+        ("method", "default"),
+        [
+            ("variation", False),
+            ("variation_detail", False),
+            ("bool_variation", False),
+            ("number_variation", 0),
+            ("string_variation", ""),
+            ("json_variation", {}),
+        ],
+    )
+    def test_a_single_read_can_opt_out_of_exposure(self, client, server, method, default):
         server.expect(_choices())
-        getattr(client(), method)("checkout_v2", CTX, False, disable_exposure=True)
+        getattr(client(), method)("checkout_v2", CTX, default, disable_exposure=True)
         assert server.requests[-1].body["exposure"] is False
+
+    @pytest.mark.parametrize(
+        ("method", "default"),
+        [
+            ("variation_detail", False),
+            ("bool_variation", False),
+            ("number_variation", 0),
+            ("string_variation", ""),
+            ("json_variation", {}),
+        ],
+    )
+    def test_every_single_read_records_the_exposure_by_default(
+        self, client, server, method, default
+    ):
+        server.expect(_choices())
+        getattr(client(), method)("checkout_v2", CTX, default)
+        assert "exposure" not in server.requests[-1].body
 
 
 def test_the_flag_detail_surface_is_public():
@@ -473,3 +515,55 @@ def test_the_flag_detail_surface_is_public():
         assert name in intempt.__all__
         assert getattr(intempt, name) is not None
     assert callable(intempt.Intempt.variation_detail)
+
+
+class TestFlagFailureReporting:
+    """What an operator and the on_flag_error hook see when evaluation fails (INT-7454)."""
+
+    def test_a_response_without_choices_is_an_answer_not_an_error(self, client, server):
+        heard: list = []
+        server.expect(Reply(body="{}"))
+        c = client(on_flag_error=heard.append)
+
+        assert c.variation("k", CTX, "safe") == "safe"
+        assert heard == []
+
+    def test_a_refused_key_is_logged_at_error_once_with_what_to_check(self, client, server, logger):
+        server.expect(Reply(status=401), Reply(status=401))
+        c = client()
+        c.variation("k", CTX, 0)
+        c.variation("k", CTX, 0)
+
+        assert len(logger.calls["error"]) == 1
+        line = logger.calls["error"][0]
+        assert "refused with 401" in line
+        assert f"(prefix {API_KEY.split('.')[0]})" in line
+        assert f"source_id {SOURCE};" in line
+        assert "serving defaults" in line
+        assert any("refused with 401; using defaults" in d for d in logger.calls["debug"])
+
+    def test_a_server_failure_is_a_warning_with_the_kind_and_status(self, client, server, logger):
+        server.expect(Reply(status=500))
+        client().variation("k", CTX, 0)
+
+        assert any("failed (server), using defaults" in w for w in logger.calls["warning"])
+        assert logger.context["warning"][-1] == {"status": 500}
+
+    def test_a_hook_that_raises_is_logged_with_its_traceback(self, client, server, caplog):
+        import logging
+
+        def hook(_error):
+            raise RuntimeError("hook broke")
+
+        caplog.set_level(logging.ERROR, logger="intempt.flaghook")
+        server.expect(Reply(status=500))
+        c = client(on_flag_error=hook, logger=logging.getLogger("intempt.flaghook"))
+
+        assert c.variation("k", CTX, "safe") == "safe"
+        raised = [r for r in caplog.records if "on_flag_error raised" in r.getMessage()]
+        assert len(raised) == 1 and raised[0].exc_info is not None
+
+    def test_an_error_that_is_not_an_api_error_has_no_status(self):
+        from intempt._client import _flag_error
+
+        assert _flag_error("k", ValueError("x")).status is None
