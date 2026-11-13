@@ -561,7 +561,7 @@ class TestFlagFailureReporting:
 
         assert c.variation("k", CTX, "safe") == "safe"
         raised = [r for r in caplog.records if "on_flag_error raised" in r.getMessage()]
-        assert len(raised) == 1 and raised[0].exc_info is not None
+        assert len(raised) == 1 and raised[0].exc_info[0] is RuntimeError
 
     def test_an_error_that_is_not_an_api_error_has_no_status(self):
         from intempt._client import _flag_error

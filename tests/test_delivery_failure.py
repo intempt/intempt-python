@@ -462,7 +462,7 @@ class TestWhatAFailureCarries:
 
         assert c.track("a", user_id="u1") is False
         raised = [r for r in caplog.records if "on_delivery_failure raised" in r.getMessage()]
-        assert len(raised) == 1 and raised[0].exc_info is not None
+        assert len(raised) == 1 and raised[0].exc_info[0] is RuntimeError
 
     def test_a_deliberate_discard_is_not_a_failure(self, client, logger):
         heard = Heard()
@@ -530,7 +530,7 @@ class TestBufferFailureDetail:
         assert heard.shapes == [("dropped", None, 2, ("a", "b"), None, True)]
         assert buffer.size == 0
         logged = [r for r in caplog.records if "could not be sent" in r.getMessage()]
-        assert len(logged) == 1 and logged[0].exc_info is not None
+        assert len(logged) == 1 and logged[0].exc_info[0] is TypeError
 
     def test_failed_counts_every_dropped_batch_with_structured_fields(self, logger):
         buffer = buffer_with(scripted(api(400), api(400)), Heard(), size=2)

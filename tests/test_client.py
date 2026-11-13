@@ -125,6 +125,16 @@ class TestEcommerce:
         assert item["name"] == "Product viewed"
         assert item["payload"][0]["data"] == {"productId": "sku-1"}
 
+    def test_added_to_cart(self, client, server):
+        assert client().ecommerce.added_to_cart(product_id="sku-1", quantity=2, user_id="u1")
+        item = server.requests[0].body["track"][0]
+        assert item["name"] == "Added to cart"
+        assert item["payload"][0]["data"] == {"productId": "sku-1", "quantity": 2}
+
+    def test_ordered_uses_the_reserved_name(self, client, server):
+        assert client().ecommerce.ordered(user_id="u1", products=[{"product_id": "a"}])
+        assert server.requests[0].body["track"][0]["name"] == "Product ordered"
+
     def test_added_to_cart_requires_a_positive_quantity(self, client):
         with pytest.raises(IntemptConfigError, match="quantity must be a positive integer"):
             client().ecommerce.added_to_cart(product_id="sku-1", quantity=0, user_id="u1")
