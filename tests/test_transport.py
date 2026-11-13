@@ -120,6 +120,7 @@ class TestFailures:
 
         assert c.track("b", user_id="u1") is True
         assert [r.body["track"][0]["name"] for r in server.requests] == ["a", "b"]
+        assert [r.path for r in server.requests] == [TRACK_PATH, TRACK_PATH]
         assert server.requests[1].socket_id != server.requests[0].socket_id
         assert heard == []
 
