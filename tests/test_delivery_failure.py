@@ -224,3 +224,53 @@ class TestNeverRaises:
         assert [(f.kind, f.event_count, f.event_ids) for f in heard.failures] == [
             ("terminal", 1, ())
         ]
+
+
+class TestConsentIsNeverSilent:
+    """R2 (Ro-bot python#16 security:F1): a failed consent write is reported, never thrown and
+    never silent. It returns False, reaches ``on_delivery_failure`` once and logs at error."""
+
+    def test_a_refused_revoke_returns_false_reports_once_and_logs_error(
+        self, client, server, logger
+    ):
+        heard = Heard()
+        server.expect(Reply(status=500))
+        c = client(on_delivery_failure=heard)
+
+        assert c.consent.revoke(user_id="u1") is False
+        assert heard.shapes == [("terminal", 500, 1, (), None, True)]
+        assert logger.has("error", "consent.revoke failed")
+
+    def test_a_failure_with_no_listener_still_logs_error(self, client, server, logger):
+        server.expect(Reply(status=500))
+
+        assert client().consent.grant(user_id="u1") is False
+        assert logger.has("error", "consent.grant failed")
+
+    def test_an_unreached_consent_is_reported_as_dropped(self, client, logger):
+        heard = Heard()
+        c = client(host="127.0.0.1:1", on_delivery_failure=heard)
+
+        assert c.consent.revoke(user_id="u1") is False
+        assert heard.shapes == [("dropped", None, 1, (), None, True)]
+        assert logger.has("error", "consent.revoke failed")
+
+    def test_a_second_503_is_reported_once_as_terminal(self, client, server):
+        heard = Heard()
+        server.expect(Reply(status=503), Reply(status=503))
+        c = client(on_delivery_failure=heard)
+        c._sleep = lambda _s: None
+
+        assert c.consent.revoke(user_id="u1") is False
+        assert len(server.requests) == 2
+        assert heard.shapes == [("terminal", 503, 1, (), 1.0, True)]
+
+    def test_an_accepted_consent_whose_body_is_false_is_delivered(self, client, server, logger):
+        """The body is the server's, not a discard signal: the record was accepted."""
+        heard = Heard()
+        server.expect(Reply(body="false"))
+        c = client(on_delivery_failure=heard)
+
+        assert c.consent.grant(user_id="u1") is True
+        assert heard.failures == []
+        assert logger.calls["error"] == []

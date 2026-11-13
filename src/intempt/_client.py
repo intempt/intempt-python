@@ -100,7 +100,15 @@ class Consent:
             }
         )
         path = config.project_path("/consents/data")
-        return self._client._deliver_now(lambda: self._client._transport.post(path, body), 1, ())
+        transport = self._client._transport
+
+        def send() -> None:
+            # Returns nothing on purpose: deliver() reads a False return as a deliberate
+            # discard, and a 2xx body of `false` must not turn an accepted record into a
+            # silent failure (R2).
+            transport.post(path, body)
+
+        return self._client._deliver_now(send, 1, (), label=name)
 
 
 class Ecommerce:
@@ -685,7 +693,9 @@ class Intempt:
     def _send_now(self, events: list[dict[str, Any]]) -> bool:
         return self._deliver_now(lambda: self._send(events), len(events), event_ids(events))
 
-    def _deliver_now(self, send: Any, count: int, ids: tuple[str, ...]) -> bool:
+    def _deliver_now(
+        self, send: Any, count: int, ids: tuple[str, ...], *, label: str = "send"
+    ) -> bool:
         """Direct mode: the same send table as the buffer, with no queue to keep a batch in."""
         outcome, failure = deliver(send, count=count, ids=ids, sleep=self._sleep)
         if failure is not None and outcome != "sent":
@@ -697,7 +707,8 @@ class Intempt:
                     terminal=True,
                 )
             self._config.logger.error(
-                "[intempt] send failed; %d event(s) dropped",
+                "[intempt] %s failed; %d event(s) dropped",
+                label,
                 count,
                 extra={"status": failure.status, "kind": failure.kind},
             )
