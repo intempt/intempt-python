@@ -463,3 +463,13 @@ class TestExposure:
         server.expect(_choices())
         getattr(client(), method)("checkout_v2", CTX, False, disable_exposure=True)
         assert server.requests[-1].body["exposure"] is False
+
+
+def test_the_flag_detail_surface_is_public():
+    """R1: variation_detail is public in every SDK, with FlagDetail and FlagReason."""
+    import intempt
+
+    for name in ("FlagDetail", "FlagReason", "FlagError"):
+        assert name in intempt.__all__
+        assert getattr(intempt, name) is not None
+    assert callable(intempt.Intempt.variation_detail)

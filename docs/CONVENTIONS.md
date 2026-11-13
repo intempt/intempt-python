@@ -19,10 +19,10 @@ to this repo. Where the two disagree, the contract wins and this file is the bug
 - **A wrong-typed value falls back; it is never coerced.** A flag configured as a string and read as
   a boolean returns the caller's default, not `true`. Coercion makes a misconfiguration look like a
   deliberate value.
-- **`variationDetail` is NOT exposed.** It would carry a reason, and the serving response does not
-  send one — so it could only report "off" for a person who was in fact targeted and served, which
-  is the single thing such a method exists to tell you. It stays internal until the platform sends
-  a reason. Do not re-add it, and do not document it.
+- **`variationDetail` is public** (Beso ruling R1, 2026-11-13, binding on all seven SDKs), with
+  `FlagDetail`, `FlagReason`, `disableExposure` and `onFlagError`. Its `reason` is narrow: `error`
+  when the evaluation failed, and `off` otherwise, a served value included, because the serving
+  response sends no reason. Do not derive a targeting reason the service did not send.
 - **Evaluation is REMOTE only.** No local rule engine, no flag store to poll, and no hashing
   utility: the server buckets, so no second implementation can disagree with it. `check-no-local-bucketing.mjs`
   enforces this in CI and a new bucketing helper will fail the build.
@@ -55,7 +55,10 @@ one the second read of such a key returns nothing and every exposure lands in on
 Two tiers, and they are not interchangeable: a configuration mistake surfaces when the config is
 built, and an API failure carries the status, the body and any `Retry-After`. A transport failure
 that never produced a response carries a **null** status, and `reached` says whether the request
-left at all: only a request that never reached the server is safe to send again. `retryable` is
+left at all: only a request that never reached the server is safe to send again. One case looks
+like a lost connection but is never-reached: a pooled keep-alive socket the server already closed
+while idle. The transport reconnects once at once and sends on the fresh socket (ruling R5); a
+connection lost on a fresh socket, or a timeout, after the write is dropped and never resent. `retryable` is
 true for 429 and 503 alone, the statuses the SDK resends once (INT-7436).
 
 ## Wire shape
