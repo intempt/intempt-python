@@ -274,6 +274,20 @@ class TestPrivacy:
         c.close()
         assert c.is_opted_in() is False
 
+    def test_has_opted_out_is_the_inverse_of_is_opted_in(self, client):
+        """INT-5416: the public docs call has_opted_out()."""
+        c = client()
+        assert c.has_opted_out() is False
+        c.opt_out()
+        assert c.has_opted_out() is True
+        c.opt_in()
+        assert c.has_opted_out() is False
+
+    def test_has_opted_out_reports_true_after_close(self, client):
+        c = client()
+        c.close()
+        assert c.has_opted_out() is True
+
 
 class TestLifecycle:
     def test_calls_after_close_raise(self, client):

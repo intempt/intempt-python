@@ -556,6 +556,9 @@ class Intempt:
     def is_opted_in(self) -> bool:
         return self._opted_in and not self._closed
 
+    def has_opted_out(self) -> bool:
+        return not self.is_opted_in()
+
     # -- config -----------------------------------------------------------
 
     def set_config(self, **patch: Any) -> None:

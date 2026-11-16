@@ -37,7 +37,7 @@ Identical across all three, allowing for language idiom (`snake_case` in Python,
 | `consent.grant(options)` / `consent.revoke(options)` | `POST …/consents/data` |
 | `ecommerce.product_viewed / added_to_cart / ordered` | `POST …/track` |
 | `recommend(options)` | `POST …/feeds/{feedId}/data` |
-| `opt_in()` / `opt_out()` / `is_opted_in()` | — |
+| `opt_in()` / `opt_out()` / `is_opted_in()` / `has_opted_out()` | — |
 | `flush()` / `close()` | — |
 | `set_config(patch)` / `config` / `buffered` | — |
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`has_opted_out()`** (INT-5416), the inverse of `is_opted_in()`: true after
+  `opt_out()` and after `close()`. The public docs already name it.
+
 ## 3.0.0 — unreleased
 
 ### Changed — breaking

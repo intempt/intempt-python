@@ -55,7 +55,7 @@ other short-lived processes.
 | `ecommerce.added_to_cart(product_id=…, quantity=…, **ids)` | `bool` | `POST …/track` |
 | `ecommerce.ordered(products=[…], **ids)` | `bool` | `POST …/track` |
 | `recommend(feed_id=…, fields=[…], **ids)` | `dict` | `POST …/feeds/{id}/data` |
-| `opt_in()` / `opt_out()` / `is_opted_in()` | — | — |
+| `opt_in()` / `opt_out()` / `is_opted_in()` / `has_opted_out()` | — | — |
 | `flush()` / `close()` | `FlushResult(sent, failed)` | — |
 | `set_config(**patch)` / `config` / `buffered` | — | — |
 
