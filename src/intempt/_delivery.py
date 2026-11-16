@@ -71,7 +71,7 @@ Outcome = Literal["sent", "kept", "dropped", "discarded"]
 
 
 def event_ids(events: Sequence[dict[str, Any]]) -> tuple[str, ...]:
-    """Distinct ids in order. Commerce lines share one eventId, so it is reported once."""
+    """Distinct ids in order; an id repeated across events is reported once."""
     seen: dict[str, None] = {}
     for event in events:
         for item in event.get("payload") or ():

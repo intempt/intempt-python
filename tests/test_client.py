@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import datetime as _dt
 import json
+import uuid
 
 import pytest
 
@@ -149,13 +150,16 @@ class TestEcommerce:
         assert payload[0]["data"] == {"productId": "a", "quantity": 2}
         assert payload[1]["data"] == {"productId": "b"}
 
-    def test_ordered_lines_share_one_event_id(self, client, server):
-        """Bit-compatible with 1.x. Safe because nothing dedupes on eventId."""
+    def test_ordered_gives_each_line_its_own_event_id(self, client, server):
+        """INT-5415: the server kept one line of a multi-product order when they shared an id."""
         client().ecommerce.ordered(
-            user_id="u1", products=[{"product_id": "a"}, {"product_id": "b"}]
+            user_id="u1",
+            products=[{"product_id": "a"}, {"product_id": "b"}, {"product_id": "c"}],
         )
         payload = server.requests[0].body["track"][0]["payload"]
-        assert payload[0]["eventId"] == payload[1]["eventId"]
+        ids = [line["eventId"] for line in payload]
+        assert len(set(ids)) == 3
+        assert all(uuid.UUID(i) for i in ids)
 
     def test_ordered_rejects_an_empty_product_list(self, client):
         with pytest.raises(IntemptConfigError, match="non-empty sequence"):

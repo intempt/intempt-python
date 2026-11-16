@@ -12,6 +12,11 @@
   is midnight UTC. The event `timestamp` option is unchanged and stays epoch
   milliseconds.
 
+### Fixed
+
+- **`ecommerce.ordered()` gives each product line its own `eventId`** (INT-5415).
+  The lines shared one id, and the server kept only one line of a multi-product order.
+
 ### Added
 
 - **`has_opted_out()`** (INT-5416), the inverse of `is_opted_in()`: true after

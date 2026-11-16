@@ -106,15 +106,17 @@ class TestListener:
 
         assert [f.event_ids for f in heard.failures] == [("a",), ("b",)]
 
-    def test_commerce_lines_sharing_an_event_id_report_it_once(self, batched, server):
+    def test_commerce_lines_each_report_their_own_event_id(self, batched, server):
         heard = Heard()
         server.expect(Reply(status=400))
         c = batched_with(batched, heard)
         c.ecommerce.ordered(user_id="u1", products=[{"product_id": "p1"}, {"product_id": "p2"}])
         c.flush()
 
+        sent = [line["eventId"] for line in server.requests[0].body["track"][0]["payload"]]
         assert heard.failures[0].event_count == 1
-        assert len(heard.failures[0].event_ids) == 1
+        assert heard.failures[0].event_ids == tuple(sent)
+        assert len(set(sent)) == 2
 
     def test_a_listener_that_raises_is_caught_and_logged(self, batched, server, logger):
         def boom(_failure):
