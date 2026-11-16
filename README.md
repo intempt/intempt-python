@@ -141,6 +141,10 @@ never resent: the SDK trades a possible loss, which it reports, for no duplicate
 `timestamp` accepts a `datetime` or epoch milliseconds. A naive `datetime` is treated
 as UTC, not local time.
 
+A `datetime` or `date` inside `properties` or the attribute maps is sent as an ISO-8601
+UTC string with milliseconds (`2026-01-01T09:30:05.123Z`), the same as the other SDKs.
+Naive is UTC there too; a `date` is midnight UTC.
+
 It **is** a backfill mechanism, between 2010 and 2040. The event store keeps your value
 and records arrival separately, so the two never overwrite each other.
 

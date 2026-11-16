@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed — behaviour
+
+- **A `datetime` or `date` inside `properties`, `user_attributes` or
+  `account_attributes` is sent as an ISO-8601 UTC string with milliseconds**
+  (INT-5418), `YYYY-MM-DDTHH:MM:SS.sssZ`, as the Swift, JS, Node and React Native SDKs
+  send it. Before, a `datetime` went out as epoch milliseconds and a `date` raised
+  `TypeError`. A naive `datetime` is read as UTC (it was read as local time); a `date`
+  is midnight UTC. The event `timestamp` option is unchanged and stays epoch
+  milliseconds.
+
 ### Added
 
 - **`has_opted_out()`** (INT-5416), the inverse of `is_opted_in()`: true after

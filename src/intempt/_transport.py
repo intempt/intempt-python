@@ -234,8 +234,15 @@ class Transport:
 def _json_default(value: Any) -> Any:
     import datetime as _dt
 
+    # Matches the Swift/JS/Node/RN wire format, so a property reads the same
+    # whichever SDK sent it. Naive means UTC, as in ensure_timestamp; a date is
+    # midnight UTC. datetime subclasses date, so it must be tested first.
     if isinstance(value, _dt.datetime):
-        return int(value.timestamp() * 1000)
+        if value.tzinfo:
+            value = value.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+        return value.isoformat(timespec="milliseconds") + "Z"
+    if isinstance(value, _dt.date):
+        return f"{value.isoformat()}T00:00:00.000Z"
     if isinstance(value, (set, frozenset)):
         return list(value)
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serialisable")
