@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.0.0 — unreleased
 
 ### Changed — behaviour
 
@@ -16,13 +16,6 @@
 
 - **`ecommerce.ordered()` gives each product line its own `eventId`** (INT-5415).
   The lines shared one id, and the server kept only one line of a multi-product order.
-
-### Added
-
-- **`has_opted_out()`** (INT-5416), the inverse of `is_opted_in()`: true after
-  `opt_out()` and after `close()`. The public docs already name it.
-
-## 3.0.0 — unreleased
 
 ### Changed — breaking
 
@@ -54,6 +47,8 @@
 
 ### Added
 
+- **`has_opted_out()`** (INT-5416), the inverse of `is_opted_in()`: true after
+  `opt_out()` and after `close()`. The public docs already name it.
 - **`on_flag_error` and public `variation_detail()`** (INT-7454). A failed evaluation
   still returns the default, and now calls `on_flag_error(FlagError(key, kind, status))`
   with `kind` one of `auth`, `bad_request`, `server`, `timeout`, `network`, `parse`.

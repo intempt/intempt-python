@@ -131,9 +131,9 @@ At `max_queue` the oldest queued event that no send is carrying is dropped and r
 
 The buffer is in memory. A hard crash loses it.
 
-**Ingestion has no idempotency key** — `eventId` travels in the payload but is not a
-column in the events table, and the table is a plain `MergeTree`, so nothing collapses
-duplicates. That is why a request that may have landed (a timeout after the write) is
+**Ingestion has no idempotency key.** Payload items of one request that share an
+`eventId` are stored as one row (measured, INT-5415), so each item gets its own id.
+Whether a resend of a request that already landed is collapsed is not measured. That is why a request that may have landed (a timeout after the write) is
 never resent: the SDK trades a possible loss, which it reports, for no duplicates.
 
 ## Timestamps
