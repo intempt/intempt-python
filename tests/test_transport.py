@@ -104,7 +104,7 @@ class TestFailures:
         c = client()
         c.track("a", user_id="u1")
         # Close the pooled connection underneath the client.
-        c._transport._conn.close()
+        c._transport._idle[0].close()
         c.track("b", user_id="u1")
         assert len(server.requests) == 2
 
@@ -247,6 +247,30 @@ class TestConcurrency:
         # Three workers on a shared cursor means at most three sockets.
         assert len({r.socket_id for r in server.requests}) <= 3
 
+    def test_requests_actually_run_in_parallel(self, client, server):
+        server.expect(*[Reply(delay_s=0.2) for _ in range(3)])
+        c = client(max_request_events=1, max_concurrent_requests=3)
+        c.track_batch([{"event": f"e{i}", "user_id": "u1"} for i in range(3)])
+
+        assert len(server.requests) == 3
+        assert server.max_in_flight == 3
+
+    def test_concurrency_is_bounded_by_the_semaphore(self, client, server):
+        server.expect(*[Reply(delay_s=0.1) for _ in range(6)])
+        c = client(max_request_events=1, max_concurrent_requests=2)
+        c.track_batch([{"event": f"e{i}", "user_id": "u1"} for i in range(6)])
+
+        assert len(server.requests) == 6
+        assert server.max_in_flight == 2
+
+    def test_set_config_resizes_the_concurrency_bound(self, client, server):
+        server.expect(*[Reply(delay_s=0.2) for _ in range(3)])
+        c = client(max_request_events=1, max_concurrent_requests=1)
+        c.set_config(max_concurrent_requests=3)
+        c.track_batch([{"event": f"e{i}", "user_id": "u1"} for i in range(3)])
+
+        assert server.max_in_flight == 3
+
     def test_a_failure_in_one_chunk_surfaces(self, client, server):
         server.expect(Reply(), Reply(status=500, body="boom"), Reply())
         c = client(max_request_events=1, max_concurrent_requests=3)
@@ -281,9 +305,9 @@ class TestTransportUnit:
         )
         transport = Transport(config, ApiKeyCredentials(API_KEY))
         transport.post(config.project_path("/track"), {"track": []})
-        first = transport._conn
+        first = transport._idle[0]
         transport.set_config(config)
-        assert transport._conn is first
+        assert transport._idle[0] is first
         transport.close()
 
     def test_close_is_idempotent(self, server):
@@ -341,7 +365,7 @@ class TestTransportErrorShapes:
         assert caught.value.cause is refused
         assert caught.value.__cause__ is refused
         assert str(caught.value) == str(refused)
-        assert transport._conn is None
+        assert transport._idle == []
 
     def test_a_connect_timeout_is_never_reached_and_timed_out(self, server, monkeypatch):
         self.refuse_with(monkeypatch, socket.timeout("timed out"))
