@@ -55,7 +55,7 @@ other short-lived processes.
 | `ecommerce.added_to_cart(product_id=…, quantity=…, **ids)` | `bool` | `POST …/track` |
 | `ecommerce.ordered(products=[…], **ids)` | `bool` | `POST …/track` |
 | `recommend(feed_id=…, fields=[…], **ids)` | `dict` | `POST …/feeds/{id}/data` |
-| `opt_in()` / `opt_out()` / `is_opted_in()` | — | — |
+| `opt_in()` / `opt_out()` / `is_opted_in()` / `has_opted_out()` | — | — |
 | `flush()` / `close()` | `FlushResult(sent, failed)` | — |
 | `set_config(**patch)` / `config` / `buffered` | — | — |
 
@@ -131,15 +131,19 @@ At `max_queue` the oldest queued event that no send is carrying is dropped and r
 
 The buffer is in memory. A hard crash loses it.
 
-**Ingestion has no idempotency key** — `eventId` travels in the payload but is not a
-column in the events table, and the table is a plain `MergeTree`, so nothing collapses
-duplicates. That is why a request that may have landed (a timeout after the write) is
+**Ingestion has no idempotency key.** Payload items of one request that share an
+`eventId` are stored as one row (measured, INT-5415), so each item gets its own id.
+Whether a resend of a request that already landed is collapsed is not measured. That is why a request that may have landed (a timeout after the write) is
 never resent: the SDK trades a possible loss, which it reports, for no duplicates.
 
 ## Timestamps
 
 `timestamp` accepts a `datetime` or epoch milliseconds. A naive `datetime` is treated
 as UTC, not local time.
+
+A `datetime` or `date` inside `properties` or the attribute maps is sent as an ISO-8601
+UTC string with milliseconds (`2026-01-01T09:30:05.123Z`), the same as the other SDKs.
+Naive is UTC there too; a `date` is midnight UTC.
 
 It **is** a backfill mechanism, between 2010 and 2040. The event store keeps your value
 and records arrival separately, so the two never overwrite each other.

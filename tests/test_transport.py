@@ -181,9 +181,43 @@ class TestSerialisation:
     def test_serialises_a_datetime_in_properties(self, client, server):
         import datetime as _dt
 
-        when = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
+        when = _dt.datetime(2026, 1, 1, 9, 30, 5, 123456, tzinfo=_dt.timezone.utc)
         client().track("purchase", user_id="u1", properties={"at": when})
-        assert server.requests[0].body["track"][0]["payload"][0]["data"]["at"] == int(
+        assert (
+            server.requests[0].body["track"][0]["payload"][0]["data"]["at"]
+            == "2026-01-01T09:30:05.123Z"
+        )
+
+    def test_serialises_a_datetime_in_attributes_as_iso_utc(self, client, server):
+        """INT-5418: Swift/JS/Node/RN send ISO-8601 UTC with milliseconds."""
+        import datetime as _dt
+
+        when = _dt.datetime(2026, 1, 1, 12, 0, tzinfo=_dt.timezone(_dt.timedelta(hours=4)))
+        client().track(
+            "purchase",
+            user_id="u1",
+            user_attributes={"signed_up": when},
+            account_attributes={"renewal": _dt.date(2026, 3, 1)},
+        )
+        item = server.requests[0].body["track"][0]["payload"][0]
+        assert item["userAttributes"]["signed_up"] == "2026-01-01T08:00:00.000Z"
+        assert item["accountAttributes"]["renewal"] == "2026-03-01T00:00:00.000Z"
+
+    def test_serialises_a_naive_datetime_as_utc(self, client, server):
+        import datetime as _dt
+
+        client().track("purchase", user_id="u1", properties={"at": _dt.datetime(2026, 1, 1, 9, 30)})
+        assert (
+            server.requests[0].body["track"][0]["payload"][0]["data"]["at"]
+            == "2026-01-01T09:30:00.000Z"
+        )
+
+    def test_keeps_the_event_timestamp_in_epoch_ms(self, client, server):
+        import datetime as _dt
+
+        when = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
+        client().track("purchase", user_id="u1", timestamp=when)
+        assert server.requests[0].body["track"][0]["payload"][0]["timestamp"] == int(
             when.timestamp() * 1000
         )
 

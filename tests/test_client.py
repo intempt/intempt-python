@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import datetime as _dt
 import json
+import uuid
 
 import pytest
 
@@ -149,13 +150,16 @@ class TestEcommerce:
         assert payload[0]["data"] == {"productId": "a", "quantity": 2}
         assert payload[1]["data"] == {"productId": "b"}
 
-    def test_ordered_lines_share_one_event_id(self, client, server):
-        """Bit-compatible with 1.x. Safe because nothing dedupes on eventId."""
+    def test_ordered_gives_each_line_its_own_event_id(self, client, server):
+        """INT-5415: the server kept one line of a multi-product order when they shared an id."""
         client().ecommerce.ordered(
-            user_id="u1", products=[{"product_id": "a"}, {"product_id": "b"}]
+            user_id="u1",
+            products=[{"product_id": "a"}, {"product_id": "b"}, {"product_id": "c"}],
         )
         payload = server.requests[0].body["track"][0]["payload"]
-        assert payload[0]["eventId"] == payload[1]["eventId"]
+        ids = [line["eventId"] for line in payload]
+        assert len(set(ids)) == 3
+        assert all(uuid.UUID(i) for i in ids)
 
     def test_ordered_rejects_an_empty_product_list(self, client):
         with pytest.raises(IntemptConfigError, match="non-empty sequence"):
@@ -273,6 +277,20 @@ class TestPrivacy:
         assert c.is_opted_in() is True
         c.close()
         assert c.is_opted_in() is False
+
+    def test_has_opted_out_is_the_inverse_of_is_opted_in(self, client):
+        """INT-5416: the public docs call has_opted_out()."""
+        c = client()
+        assert c.has_opted_out() is False
+        c.opt_out()
+        assert c.has_opted_out() is True
+        c.opt_in()
+        assert c.has_opted_out() is False
+
+    def test_has_opted_out_reports_true_after_close(self, client):
+        c = client()
+        c.close()
+        assert c.has_opted_out() is True
 
 
 class TestLifecycle:

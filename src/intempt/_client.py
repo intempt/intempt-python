@@ -556,6 +556,9 @@ class Intempt:
     def is_opted_in(self) -> bool:
         return self._opted_in and not self._closed
 
+    def has_opted_out(self) -> bool:
+        return not self.is_opted_in()
+
     # -- config -----------------------------------------------------------
 
     def set_config(self, **patch: Any) -> None:
@@ -657,17 +660,15 @@ class Intempt:
     ) -> bool:
         """One event carrying several payload items, one per line.
 
-        Kept bit-compatible with the 1.x commerce wire format: the lines share a
-        single eventId. Nothing on the ingestion path dedupes on eventId, so this
-        cannot collapse rows.
+        Each line gets its own eventId (INT-5415): with a shared id the server
+        kept only one line of a multi-product order.
         """
-        event_id = str(uuid.uuid4())
         raw = ids.get("timestamp")
         millis = ensure_timestamp(raw) if raw is not None else _now_ms()
         payload = [
             compact(
                 {
-                    "eventId": event_id,
+                    "eventId": str(uuid.uuid4()),
                     "timestamp": millis,
                     "profileId": ids.get("profile_id"),
                     "userId": ids.get("user_id"),

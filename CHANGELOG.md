@@ -2,6 +2,21 @@
 
 ## 3.0.0 — unreleased
 
+### Changed — behaviour
+
+- **A `datetime` or `date` inside `properties`, `user_attributes` or
+  `account_attributes` is sent as an ISO-8601 UTC string with milliseconds**
+  (INT-5418), `YYYY-MM-DDTHH:MM:SS.sssZ`, as the Swift, JS, Node and React Native SDKs
+  send it. Before, a `datetime` went out as epoch milliseconds and a `date` raised
+  `TypeError`. A naive `datetime` is read as UTC (it was read as local time); a `date`
+  is midnight UTC. The event `timestamp` option is unchanged and stays epoch
+  milliseconds.
+
+### Fixed
+
+- **`ecommerce.ordered()` gives each product line its own `eventId`** (INT-5415).
+  The lines shared one id, and the server kept only one line of a multi-product order.
+
 ### Changed — breaking
 
 - **Each request is sent once** (INT-7436). 503 and 429 get one resend after
@@ -32,6 +47,8 @@
 
 ### Added
 
+- **`has_opted_out()`** (INT-5416), the inverse of `is_opted_in()`: true after
+  `opt_out()` and after `close()`. The public docs already name it.
 - **`on_flag_error` and public `variation_detail()`** (INT-7454). A failed evaluation
   still returns the default, and now calls `on_flag_error(FlagError(key, kind, status))`
   with `kind` one of `auth`, `bad_request`, `server`, `timeout`, `network`, `parse`.
