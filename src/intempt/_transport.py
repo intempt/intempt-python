@@ -54,6 +54,11 @@ class ApiKeyCredentials:
     def authorization_header(self) -> str:
         return self._header
 
+    @property
+    def prefix(self) -> str:
+        """The public half, safe to log; it is what tells an operator which key was refused."""
+        return self._prefix
+
     def __repr__(self) -> str:
         return f"ApiKeyCredentials(prefix={self._prefix!r}, secret=<redacted>)"
 
@@ -126,6 +131,10 @@ class Transport:
                 raise IntemptApiError("client is closed")
             if config.keep_alive and self._idle:
                 return self._idle.pop()
+        return self._new_connection(config)
+
+    @staticmethod
+    def _new_connection(config: ResolvedConfig) -> http.client.HTTPConnection:
         cls = (
             http.client.HTTPSConnection if config.scheme == "https" else http.client.HTTPConnection
         )
@@ -137,6 +146,26 @@ class Transport:
                 _close_quietly(conn)
                 return
             self._idle.append(conn)
+
+    def _connect(self, conn: http.client.HTTPConnection) -> None:
+        """Connect before writing, so a failure here is known to be never-reached."""
+        try:
+            conn.connect()
+        except OSError as exc:
+            _close_quietly(conn)
+            raise IntemptApiError(
+                str(exc) or type(exc).__name__,
+                cause=exc,
+                reached=False,
+                timed_out=isinstance(exc, socket.timeout),
+            ) from exc
+
+    @staticmethod
+    def _exchange(
+        conn: http.client.HTTPConnection, path: str, payload: bytes, headers: dict[str, str]
+    ) -> http.client.HTTPResponse:
+        conn.request("POST", path, body=payload, headers=headers)
+        return conn.getresponse()
 
     def post(self, path: str, body: Any) -> Any:
         """POST JSON, return the decoded body. Raises IntemptApiError on failure."""
@@ -156,16 +185,30 @@ class Transport:
             with self._lock:
                 config = self._config
             conn = self._checkout(config)
+            reused = conn.sock is not None
+            if not reused:
+                self._connect(conn)
             try:
-                conn.request("POST", path, body=payload, headers=headers)
-                response = conn.getresponse()
+                try:
+                    response = self._exchange(conn, path, payload, headers)
+                except ConnectionError:
+                    # R5: on a pooled socket this is the server having reaped it while idle, so
+                    # the write never reached a live peer. Reconnect once at once, as urllib3,
+                    # undici and Java's HttpClient do. Not on a fresh socket: there the same
+                    # error comes after a write a live server may hold, and a resend duplicates.
+                    if not reused:
+                        raise
+                    _close_quietly(conn)
+                    conn = self._new_connection(config)
+                    self._connect(conn)
+                    response = self._exchange(conn, path, payload, headers)
                 raw = response.read().decode("utf-8", errors="replace")
                 status = response.status
                 retry_after = parse_retry_after(response.getheader("Retry-After"))
             except socket.timeout as exc:
                 _close_quietly(conn)
                 raise IntemptApiError(
-                    f"request timed out after {config.timeout}s", cause=exc
+                    f"request timed out after {config.timeout}s", cause=exc, timed_out=True
                 ) from exc
             except (http.client.HTTPException, OSError) as exc:
                 # A pooled connection the server already closed raises here on
@@ -213,8 +256,15 @@ def _close_quietly(conn: http.client.HTTPConnection) -> None:
 def _json_default(value: Any) -> Any:
     import datetime as _dt
 
+    # Matches the Swift/JS/Node/RN wire format, so a property reads the same
+    # whichever SDK sent it. Naive means UTC, as in ensure_timestamp; a date is
+    # midnight UTC. datetime subclasses date, so it must be tested first.
     if isinstance(value, _dt.datetime):
-        return int(value.timestamp() * 1000)
+        if value.tzinfo:
+            value = value.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+        return value.isoformat(timespec="milliseconds") + "Z"
+    if isinstance(value, _dt.date):
+        return f"{value.isoformat()}T00:00:00.000Z"
     if isinstance(value, (set, frozenset)):
         return list(value)
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serialisable")

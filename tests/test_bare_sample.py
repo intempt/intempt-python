@@ -10,6 +10,7 @@ Licensed under the Apache License, Version 2.0.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -38,6 +39,9 @@ def run(server: object, **overrides: str) -> subprocess.CompletedProcess[str]:
         "INTEMPT_USER_ID": USER,
         "INTEMPT_HOST": server.host,  # type: ignore[attr-defined]
         "INTEMPT_SCHEME": "http",
+        # setup-python on a self-hosted runner installs a shared-libpython
+        # interpreter that only finds libpython through LD_LIBRARY_PATH.
+        "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", ""),
     }
     env.update(overrides)
     env = {k: v for k, v in env.items() if v != ""}
@@ -117,16 +121,16 @@ class TestBareSample:
 
         assert result.returncode == 1
         assert "status=500" in result.stderr
-        assert "retryable=True" in result.stderr
+        assert "kind=terminal" in result.stderr
 
-    def test_a_401_is_reported_as_not_retryable(self, server):
+    def test_a_401_is_reported_as_terminal(self, server):
         server.expect(*[Reply(status=401, body="{}") for _ in range(20)])
 
         result = run(server)
 
         assert result.returncode == 1
         assert "status=401" in result.stderr
-        assert "retryable=False" in result.stderr
+        assert "terminal=True" in result.stderr
 
     def test_recommend_is_skipped_without_a_feed_id(self, server):
         server.expect(*[Reply(status=200, body="{}") for _ in range(20)])

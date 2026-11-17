@@ -7,6 +7,7 @@ Licensed under the Apache License, Version 2.0.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -65,6 +66,12 @@ class ResolvedConfig:
     max_request_events: int = DEFAULT_MAX_REQUEST_EVENTS
     max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS
     logger: Any = field(default_factory=lambda: logging.getLogger("intempt"))
+    #: Hears each batch's final delivery failure once (INT-7444). Exceptions it
+    #: raises are caught and logged.
+    on_delivery_failure: Any = None
+    #: Hears each failed flag evaluation (INT-7454). Exceptions it raises are
+    #: swallowed and logged; the caller still gets its default.
+    on_flag_error: Any = None
 
     def project_path(self, suffix: str) -> str:
         from urllib.parse import quote
@@ -96,6 +103,27 @@ def _split_host(host: str) -> tuple[str, int | None]:
     return hostname, port
 
 
+_LONG_MAX = "9223372036854775807"
+
+
+def _is_positive_long(value: str) -> bool:
+    # The backend parses source_id as a Java long and requires it > 0 (INT-7455). fullmatch, not
+    # match: "$" also matches before a trailing newline. [0-9], not \d: \d accepts non-ASCII
+    # digits. Equal-length digit strings order lexicographically exactly as numerically.
+    return re.fullmatch(r"[1-9][0-9]{0,18}", value) is not None and (
+        len(value) < len(_LONG_MAX) or value <= _LONG_MAX
+    )
+
+
+_HOOKS = ("on_delivery_failure", "on_flag_error")
+
+
+def _callable_or_none(value: Any, name: str) -> Any:
+    if value is not None and not callable(value):
+        raise IntemptConfigError(f"{name} must be callable")
+    return value
+
+
 def resolve_config(**options: Any) -> ResolvedConfig:
     """Validate and normalise constructor options."""
     for name in ("org", "project", "api_key"):
@@ -110,6 +138,10 @@ def resolve_config(**options: Any) -> ResolvedConfig:
         source_id = str(source_id)
         if not source_id.strip():
             raise IntemptConfigError('Intempt: "source_id" must not be empty when provided')
+        if not _is_positive_long(source_id):
+            raise IntemptConfigError(
+                'Intempt: "source_id" must be a positive 64-bit integer, as a string of digits'
+            )
 
     # None means "not supplied, use the default". An explicit empty string is a
     # mistake and is refused rather than quietly becoming the default.
@@ -141,6 +173,8 @@ def resolve_config(**options: Any) -> ResolvedConfig:
     logger = options.get("logger") or logging.getLogger("intempt")
     assert_logger(logger)
 
+    hooks = {name: _callable_or_none(options.get(name), name) for name in _HOOKS}
+
     # Imported here rather than at module scope: _transport imports _config for
     # ResolvedConfig, so a top-level import would be circular.
     from ._transport import ApiKeyCredentials
@@ -161,6 +195,7 @@ def resolve_config(**options: Any) -> ResolvedConfig:
         max_request_events=max_request_events,
         max_concurrent_requests=max_concurrent,
         logger=logger,
+        **hooks,
     )
 
 
@@ -205,6 +240,9 @@ def merge_config(current: ResolvedConfig, patch: Mapping[str, Any]) -> ResolvedC
     if "logger" in patch:
         assert_logger(patch["logger"])
         changes["logger"] = patch["logger"]
+    for name in _HOOKS:
+        if name in patch:
+            changes[name] = _callable_or_none(patch[name], name)
     for name in ("path", "debug", "max_request_events", "max_concurrent_requests"):
         if name in patch:
             changes[name] = patch[name]

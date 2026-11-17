@@ -43,7 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from intempt import BatchOptions, Intempt, IntemptApiError  # noqa: E402
+from intempt import BatchOptions, DeliveryFailure, Intempt, IntemptApiError  # noqa: E402
 
 # --- .env.local -------------------------------------------------------------
 
@@ -115,6 +115,10 @@ for name, value, used_by in [
     print(f"  {'have' if value else 'MISS'}  {name:<22} {used_by}")
 print("  " + "-" * 76 + "\n")
 
+# Writes report a refused or lost delivery through their return value and this listener, not
+# by raising (INT-7444), so a step that merely did not raise has proved nothing.
+failures: list[DeliveryFailure] = []
+
 client = Intempt(
     org=ORG,
     project=PROJECT,
@@ -122,7 +126,20 @@ client = Intempt(
     source_id=SOURCE_ID,
     host=HOST,
     scheme=SCHEME,
+    on_delivery_failure=failures.append,
 )
+
+
+class WriteFailed(Exception):
+    pass
+
+
+def describe(failure: DeliveryFailure | None) -> str:
+    if failure is None:
+        return "no delivery failure was reported"
+    status = failure.status if failure.status is not None else "no status"
+    return f"{failure.kind} {status}"
+
 
 # --- harness ----------------------------------------------------------------
 
@@ -131,8 +148,11 @@ results: list[dict[str, object]] = []
 
 def step(name: str, fn) -> None:
     started = time.monotonic()
+    failures.clear()
     try:
         value = fn()
+        if value is False:
+            raise WriteFailed(f"returned False: {describe(failures[-1] if failures else None)}")
         ms = int((time.monotonic() - started) * 1000)
         note = "2xx" if value is None else str(value)[:60]
         results.append({"name": name, "state": "PASS", "ms": ms, "note": note})
@@ -265,6 +285,7 @@ else:
 
 
 def buffered() -> str:
+    buffered_failures: list[DeliveryFailure] = []
     buffered_client = Intempt(
         org=ORG,
         project=PROJECT,
@@ -273,11 +294,19 @@ def buffered() -> str:
         host=HOST,
         scheme=SCHEME,
         batch=BatchOptions(size=50, flush_ms=60_000, max_queue=1_000),
+        on_delivery_failure=buffered_failures.append,
     )
     try:
-        for index in range(5):
+        queued = [
             buffered_client.track("sdk_e2e_buffered", user_id=user_id, properties={"i": index})
-        buffered_client.flush()
+            for index in range(5)
+        ]
+        if not all(queued):
+            raise WriteFailed(f"only {sum(queued)} of 5 events were queued")
+        result = buffered_client.flush()
+        if result.sent != 5 or result.failed:
+            last = describe(buffered_failures[-1] if buffered_failures else None)
+            raise WriteFailed(f"flush sent {result.sent}, failed {result.failed}: {last}")
         return "5 events, 1 request"
     finally:
         buffered_client.close()

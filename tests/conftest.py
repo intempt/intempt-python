@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import socket
 import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,6 +44,13 @@ class Reply:
     body: str = "{}"
     headers: dict[str, str] = field(default_factory=dict)
     delay_s: float = 0.0
+    #: Answer, then close the socket without a ``Connection: close`` header, the way a server
+    #: reaps an idle keep-alive socket. The client still holds it as pooled.
+    close_after: bool = False
+    #: Read the request, then close the socket without answering.
+    abort: bool = False
+    #: Bytes to answer with instead of ``body``, for a body that is not valid UTF-8.
+    raw: bytes | None = None
 
 
 class RecordingServer:
@@ -96,7 +104,11 @@ class RecordingServer:
                         if epoch == outer._epoch:
                             outer.in_flight -= 1
 
-                payload = reply.body.encode("utf-8")
+                if reply.abort:
+                    self._hang_up()
+                    return
+
+                payload = reply.raw if reply.raw is not None else reply.body.encode("utf-8")
                 self.send_response(reply.status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
@@ -104,6 +116,16 @@ class RecordingServer:
                     self.send_header(key, value)
                 self.end_headers()
                 self.wfile.write(payload)
+                if reply.close_after:
+                    self.wfile.flush()
+                    self._hang_up()
+
+            def _hang_up(self) -> None:
+                # Shut down here rather than leaving it to the server loop, so the FIN is on
+                # the wire before the test's next request and the race is not left to timing.
+                self.close_connection = True
+                with contextlib.suppress(OSError):
+                    self.connection.shutdown(socket.SHUT_RDWR)
 
             def log_message(self, *_: Any) -> None:
                 """Silence the default stderr access log."""

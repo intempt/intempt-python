@@ -10,9 +10,9 @@ Intempt SDK conforms to. Four of its rules shape this module:
 2. ``default_value`` is REQUIRED. It is what a caller receives on a network failure, a timeout,
    an unknown key or a malformed response. Optional is how ``None`` reaches production during an
    outage.
-3. ``variation_detail`` is NOT exposed. It would carry a ``reason``, and the platform does not
-   send one, so it could not tell a deliberate off
-   state from a request the service never answered.
+3. ``variation_detail`` is public (INT-7454) but its ``reason`` is narrow: the platform sends no
+   reason, so a served value and a 200 with no choice both read ``off``; only a failed evaluation
+   is distinguishable, as ``error`` with a :class:`FlagError` attached.
 4. Evaluation is REMOTE only. There is no local rule engine and no flag store to poll.
 
 A server SDK is an ``api``-channel consumer: it receives a value and branches on it in code.
@@ -33,7 +33,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-FlagReason = Literal["targeted", "holdout", "not_targeted", "off"]
+FlagReason = Literal["targeted", "holdout", "not_targeted", "off", "error"]
+FlagErrorKind = Literal["auth", "bad_request", "server", "timeout", "network", "parse"]
 
 #: A response the service did not answer is reported as such rather than guessed at.
 UNANSWERED: FlagReason = "off"
@@ -95,8 +96,18 @@ def _present(value: str | None) -> bool:
 
 
 @dataclass(frozen=True)
+class FlagError:
+    """Why an evaluation fell back to the default (INT-7454). ``key`` is None for ``all_flags``."""
+
+    key: str | None
+    kind: FlagErrorKind
+    status: int | None = None
+
+
+@dataclass(frozen=True)
 class FlagDetail:
     """A value and why it was returned."""
 
     value: Any
     reason: FlagReason
+    error: FlagError | None = None

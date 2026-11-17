@@ -20,9 +20,12 @@ class IntemptConfigError(IntemptError, ValueError):
 class IntemptApiError(IntemptError):
     """The API answered, or the transport failed.
 
-    ``status`` is ``None`` for a transport failure or a timeout, which is why
-    ``retryable`` treats that case as retryable: nothing came back to say the
-    request was rejected on its merits.
+    ``status`` is ``None`` for a transport failure or a timeout. ``reached`` is
+    False only when the request never left (DNS, refused, connect timeout): that
+    batch is safe to send again. Once the request was written the server may hold
+    it, so a timeout or a broken connection after that point is not resent
+    (INT-7436). The exception is a pooled keep-alive socket the server already
+    closed: the transport reconnects once before this error is ever raised (R5).
     """
 
     def __init__(
@@ -33,19 +36,21 @@ class IntemptApiError(IntemptError):
         body: str | None = None,
         retry_after_ms: int | None = None,
         cause: BaseException | None = None,
+        reached: bool = True,
+        timed_out: bool = False,
     ) -> None:
         super().__init__(message)
         self.status = status
         self.body = body
         self.retry_after_ms = retry_after_ms
         self.cause = cause
+        self.reached = reached
+        self.timed_out = timed_out
 
     @property
     def retryable(self) -> bool:
-        """True for statuses worth retrying: 408, 429 and any 5xx."""
-        if self.status is None:
-            return True
-        return self.status in (408, 429) or self.status >= 500
+        """True for 429 and 503, the only statuses the SDK resends (once; INT-7436)."""
+        return self.status in (429, 503)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"IntemptApiError(status={self.status!r}, message={str(self)!r})"

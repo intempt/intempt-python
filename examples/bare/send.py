@@ -12,8 +12,9 @@ code, and the whole file runs in about a second.
     python examples/bare/send.py
 
 Every call sends one request and returns when the server answers, so the events
-are in the console by the time this exits. Open Sources -> your source -> Live
-events and look for the user id printed at the end.
+are in the console by the time this exits. A write that fails does not raise: it
+is reported to `on_delivery_failure`, which this sample turns into exit code 1.
+Open Sources -> your source -> Live events and look for the user id printed at the end.
 
 Copyright 2026 Intempt Technologies
 Licensed under the Apache License, Version 2.0.
@@ -46,6 +47,7 @@ def main() -> int:
     # Construction validates, so it gets the same handling as the calls below.
     # Leaving it outside the try turned a blank INTEMPT_ORG into a traceback
     # instead of the one-line message this prints for every other bad argument.
+    failures = []
     try:
         client = Intempt(
             org=os.environ["INTEMPT_ORG"],
@@ -54,6 +56,7 @@ def main() -> int:
             source_id=os.environ.get("INTEMPT_SOURCE_ID"),
             host=os.environ.get("INTEMPT_HOST") or "api.intempt.com",
             scheme=os.environ.get("INTEMPT_SCHEME") or "https",
+            on_delivery_failure=failures.append,
         )
     except IntemptConfigError as error:
         print(f"bad arguments: {error}", file=sys.stderr)
@@ -134,9 +137,17 @@ def main() -> int:
             print(f"bad arguments: {error}", file=sys.stderr)
             return 2
         except IntemptApiError as error:
-            print(f"API error: status={error.status} retryable={error.retryable}", file=sys.stderr)
-            print(f"body: {error.body}", file=sys.stderr)
+            print(f"API error: status={error.status} body: {error.body}", file=sys.stderr)
             return 1
+
+    if failures:
+        for failure in failures:
+            print(
+                f"delivery failed: kind={failure.kind} status={failure.status} "
+                f"events={failure.event_count} terminal={failure.terminal}",
+                file=sys.stderr,
+            )
+        return 1
 
     print(f"sent. look for user id {user_id!r} in Sources -> Live events.")
     return 0

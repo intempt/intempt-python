@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import datetime as _dt
+import json
+import uuid
 
 import pytest
 
@@ -124,6 +126,16 @@ class TestEcommerce:
         assert item["name"] == "Product viewed"
         assert item["payload"][0]["data"] == {"productId": "sku-1"}
 
+    def test_added_to_cart(self, client, server):
+        assert client().ecommerce.added_to_cart(product_id="sku-1", quantity=2, user_id="u1")
+        item = server.requests[0].body["track"][0]
+        assert item["name"] == "Added to cart"
+        assert item["payload"][0]["data"] == {"productId": "sku-1", "quantity": 2}
+
+    def test_ordered_uses_the_reserved_name(self, client, server):
+        assert client().ecommerce.ordered(user_id="u1", products=[{"product_id": "a"}])
+        assert server.requests[0].body["track"][0]["name"] == "Product ordered"
+
     def test_added_to_cart_requires_a_positive_quantity(self, client):
         with pytest.raises(IntemptConfigError, match="quantity must be a positive integer"):
             client().ecommerce.added_to_cart(product_id="sku-1", quantity=0, user_id="u1")
@@ -138,13 +150,16 @@ class TestEcommerce:
         assert payload[0]["data"] == {"productId": "a", "quantity": 2}
         assert payload[1]["data"] == {"productId": "b"}
 
-    def test_ordered_lines_share_one_event_id(self, client, server):
-        """Bit-compatible with 1.x. Safe because nothing dedupes on eventId."""
+    def test_ordered_gives_each_line_its_own_event_id(self, client, server):
+        """INT-5415: the server kept one line of a multi-product order when they shared an id."""
         client().ecommerce.ordered(
-            user_id="u1", products=[{"product_id": "a"}, {"product_id": "b"}]
+            user_id="u1",
+            products=[{"product_id": "a"}, {"product_id": "b"}, {"product_id": "c"}],
         )
         payload = server.requests[0].body["track"][0]["payload"]
-        assert payload[0]["eventId"] == payload[1]["eventId"]
+        ids = [line["eventId"] for line in payload]
+        assert len(set(ids)) == 3
+        assert all(uuid.UUID(i) for i in ids)
 
     def test_ordered_rejects_an_empty_product_list(self, client):
         with pytest.raises(IntemptConfigError, match="non-empty sequence"):
@@ -226,14 +241,23 @@ class TestRecommend:
 
 
 class TestPrivacy:
-    def test_opt_out_suppresses_every_write(self, client, server):
+    def test_opt_out_suppresses_every_tracking_write(self, client, server):
         c = client()
         c.opt_out()
         c.track("purchase", user_id="u1")
         c.identify(user_id="u1")
-        c.consent.grant(user_id="u1")
         c.ecommerce.ordered(user_id="u1", products=[{"product_id": "a"}])
         assert server.requests == []
+
+    def test_opt_out_still_sends_consent_grant_and_revoke(self, client, server):
+        # Ruling D-5 (INT-7437): consent is the person's own instruction, so a withdrawal must
+        # reach the server precisely when they have opted out. intempt-js does not gate it either.
+        c = client()
+        c.opt_out()
+        c.consent.grant(user_id="u1")
+        c.consent.revoke(user_id="u1")
+        assert [r.path for r in server.requests] == [CONSENT_PATH, CONSENT_PATH]
+        assert [r.body["action"] for r in server.requests] == ["accept", "reject"]
 
     def test_opt_in_restores_sending(self, client, server):
         c = client()
@@ -253,6 +277,20 @@ class TestPrivacy:
         assert c.is_opted_in() is True
         c.close()
         assert c.is_opted_in() is False
+
+    def test_has_opted_out_is_the_inverse_of_is_opted_in(self, client):
+        """INT-5416: the public docs call has_opted_out()."""
+        c = client()
+        assert c.has_opted_out() is False
+        c.opt_out()
+        assert c.has_opted_out() is True
+        c.opt_in()
+        assert c.has_opted_out() is False
+
+    def test_has_opted_out_reports_true_after_close(self, client):
+        c = client()
+        c.close()
+        assert c.has_opted_out() is True
 
 
 class TestLifecycle:
@@ -280,18 +318,20 @@ class TestLifecycle:
 
 
 class TestErrors:
+    # Delivery writes no longer raise (INT-7444), so the error surface is pinned on recommend(),
+    # which still does.
     def test_surfaces_a_500_with_status_and_body(self, client, server):
         server.expect(Reply(status=500, body='{"error":"boom"}'))
         with pytest.raises(IntemptApiError) as caught:
-            client().track("purchase", user_id="u1")
+            client().recommend(user_id="u1", feed_id="f", fields=["id"])
         assert caught.value.status == 500
         assert "boom" in caught.value.body
-        assert caught.value.retryable is True
+        assert caught.value.retryable is False
 
     def test_a_400_is_not_retryable(self, client, server):
         server.expect(Reply(status=400, body="bad"))
         with pytest.raises(IntemptApiError) as caught:
-            client().track("purchase", user_id="u1")
+            client().recommend(user_id="u1", feed_id="f", fields=["id"])
         assert caught.value.retryable is False
 
     def test_never_leaks_the_credential(self, client, server):
@@ -300,7 +340,7 @@ class TestErrors:
 
         server.expect(Reply(status=500, body="boom"))
         try:
-            client().track("purchase", user_id="u1")
+            client().recommend(user_id="u1", feed_id="f", fields=["id"])
         except IntemptApiError as exc:
             views = [
                 str(exc),
@@ -312,3 +352,21 @@ class TestErrors:
         for view in views:
             assert secret not in view
             assert basic not in view
+
+
+class TestNoSessionOnTrack:
+    """INT-7446 (CONTRACT-R2 S5): a server SDK sends no sessionId on any write and never invents
+    one; a caller-supplied session id is accepted on flag calls only (tests/test_flags.py)."""
+
+    def test_no_write_carries_a_session_id(self, client, server):
+        c = client()
+        c.track("a", user_id="u1", session_id="s-1")
+        c.track_batch([{"event": "b", "user_id": "u1", "session_id": "s-1"}])
+        c.identify(user_id="u1", session_id="s-1")
+        c.group(user_id="u1", account_id="acc", session_id="s-1")
+        c.ecommerce.product_viewed(user_id="u1", product_id="p", session_id="s-1")
+
+        assert len(server.requests) == 5
+        for request in server.requests:
+            assert "sessionId" not in json.dumps(request.body)
+            assert "session" not in json.dumps(request.body).lower()
